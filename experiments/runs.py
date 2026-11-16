@@ -19,14 +19,20 @@ The SGDC Replica adapter reads ``<source>/semantic_class`` automatically, so a
 run only needs ``--sgdc_enable`` (plus its hyperparameters) -- no path/number
 arguments.
 
-Two independent SGDC components are represented here (see ``docs/sgdc_spec.md``):
+Components represented here (see ``docs/sgdc_spec.md``):
 
 * **A** -- boundary-aware density control: scale the clone/split gradient
   threshold per Gaussian by its distance to a semantic boundary
   (``--f_b`` boundary / ``--f_int`` interior / ``--sgdc_dt_norm``).
+* **B** -- segment-level error budgeting: a hard per-refine budget of
+  ``--sgdc_budget_B * N`` slots allocated across segments by *fixable error*
+  (``|grad| * residual``), top-k within each segment (``--sgdc_budget_enable``).
+* **A.1** -- mask-boundary straddle clone/split: a Gaussian whose projected mass
+  crosses a boundary (``|sd| <= k * sigma_perp``) is split rather than cloned
+  (``--sgdc_signal_enable`` / ``--sgdc_split_k``).
 * **C** -- cross-boundary scale regularizer: an extra loss that reshapes
-  boundary Gaussians (``--lambda_bnd``). The C runs neutralise A
-  (``--f_b 1.0 --f_int 1.0 --eta 0.0``) so only C acts.
+  boundary Gaussians (``--lambda_bnd``). The C/B runs neutralise A
+  (``--f_b 1.0 --f_int 1.0 --eta 0.0``) so only their own component acts.
 """
 
 from __future__ import annotations
@@ -138,6 +144,34 @@ RUNS: Dict[str, RunSpec] = {
                    "--lambda_bnd", "0.50"),
             notes="C: cross-boundary scale loss, lambda_bnd 0.50 (A neutral).",
         ),
+        # --- Component B: segment-level error budgeting (A neutral so only B
+        # acts). Each refine step gets a hard budget of B*N slots allocated
+        # across segments by fixable error (|grad| * residual). ---
+        RunSpec(
+            run_id="sgdc_b_30k",
+            method="sgdc",
+            iterations=30_000,
+            extra=("--sgdc_enable", "--f_b", "1.0", "--f_int", "1.0", "--eta", "0.0",
+                   "--sgdc_budget_enable", "--sgdc_budget_B", "0.05"),
+            notes="B: error-budgeted density control (B = 5% of N per refine).",
+        ),
+        RunSpec(
+            run_id="sgdc_bsig_30k",
+            method="sgdc",
+            iterations=30_000,
+            extra=("--sgdc_enable", "--f_b", "1.0", "--f_int", "1.0", "--eta", "0.0",
+                   "--sgdc_budget_enable", "--sgdc_budget_B", "0.05",
+                   "--sgdc_signal_enable", "--sgdc_split_k", "1.0"),
+            notes="B + A.1: error budget, clone/split chosen by mask-boundary straddle.",
+        ),
+        RunSpec(
+            run_id="sgdc_sig_30k",
+            method="sgdc",
+            iterations=30_000,
+            extra=("--sgdc_enable", "--f_b", "1.0", "--f_int", "1.0", "--eta", "0.0",
+                   "--sgdc_signal_enable", "--sgdc_split_k", "1.0"),
+            notes="A.1 only: mask-boundary straddle drives clone/split (no budget).",
+        ),
         # --- sanity runs: same configs, 3_000 iters. Enough to cross the first
         # densification (500), hit the opacity reset (3000) and save. Use to
         # verify the whole pipeline (train -> rasterizer swap -> eval). ---
@@ -171,6 +205,25 @@ RUNS: Dict[str, RunSpec] = {
                    "--lambda_bnd", "0.10"),
             sanity=True,
             notes="SANITY: Component C (lambda_bnd 0.10) @3k.",
+        ),
+        RunSpec(
+            run_id="sgdc_b_sanity",
+            method="sgdc",
+            iterations=3_000,
+            extra=("--sgdc_enable", "--f_b", "1.0", "--f_int", "1.0", "--eta", "0.0",
+                   "--sgdc_budget_enable", "--sgdc_budget_B", "0.05"),
+            sanity=True,
+            notes="SANITY: Component B (error budget) @3k.",
+        ),
+        RunSpec(
+            run_id="sgdc_bsig_sanity",
+            method="sgdc",
+            iterations=3_000,
+            extra=("--sgdc_enable", "--f_b", "1.0", "--f_int", "1.0", "--eta", "0.0",
+                   "--sgdc_budget_enable", "--sgdc_budget_B", "0.05",
+                   "--sgdc_signal_enable", "--sgdc_split_k", "1.0"),
+            sanity=True,
+            notes="SANITY: Component B + A.1 (straddle clone/split) @3k.",
         ),
     )
 }

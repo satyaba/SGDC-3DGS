@@ -68,6 +68,7 @@ class GaussianModel:
         self.seg_void_cnt = torch.empty(0)
         self.seg_dt_sum = torch.empty(0)
         self.seg_norm_sum = torch.empty(0)
+        self.seg_err_sum = torch.empty(0)
         self.semantic_store = None
         self.sgdc_enable = False
         self.optimizer = None
@@ -196,6 +197,14 @@ class GaussianModel:
         self.sgdc_f_int = getattr(training_args, "f_int", 2.0)
         self.sgdc_eta = getattr(training_args, "eta", 0.3)
         self.sgdc_dt_norm = getattr(training_args, "sgdc_dt_norm", 100.0)
+        # Component B: segment-level error budgeting (sgdc/budget.py)
+        self.sgdc_budget_enable = getattr(training_args, "sgdc_budget_enable", False)
+        self.sgdc_budget_B = getattr(training_args, "sgdc_budget_B", 0.05)
+        self.sgdc_budget_grad_only = getattr(training_args, "sgdc_budget_grad_only", False)
+        # Reading A: mask-boundary straddle drives clone vs split
+        self.sgdc_signal_enable = getattr(training_args, "sgdc_signal_enable", False)
+        self.sgdc_split_k = getattr(training_args, "sgdc_split_k", 1.0)
+        self.sgdc_signal_band = getattr(training_args, "sgdc_signal_band", 32.0)
         _n = self.get_xyz.shape[0]
         self.seg_top1 = torch.zeros((_n,), device="cuda", dtype=torch.long)
         self.seg_top1_cnt = torch.zeros((_n, 1), device="cuda")
@@ -203,6 +212,7 @@ class GaussianModel:
         self.seg_void_cnt = torch.zeros((_n, 1), device="cuda")
         self.seg_dt_sum = torch.zeros((_n, 1), device="cuda")
         self.seg_norm_sum = torch.zeros((_n, 1), device="cuda")
+        self.seg_err_sum = torch.zeros((_n, 1), device="cuda")
 
         l = [
             {'params': [self._xyz], 'lr': training_args.position_lr_init * self.spatial_lr_scale, "name": "xyz"},
@@ -393,6 +403,7 @@ class GaussianModel:
             self.seg_void_cnt = self.seg_void_cnt[valid_points_mask]
             self.seg_dt_sum = self.seg_dt_sum[valid_points_mask]
             self.seg_norm_sum = self.seg_norm_sum[valid_points_mask]
+            self.seg_err_sum = self.seg_err_sum[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -448,8 +459,9 @@ class GaussianModel:
             self.seg_void_cnt = torch.zeros((_n, 1), device="cuda")
             self.seg_dt_sum = torch.zeros((_n, 1), device="cuda")
             self.seg_norm_sum = torch.zeros((_n, 1), device="cuda")
+            self.seg_err_sum = torch.zeros((_n, 1), device="cuda")
 
-    def densify_and_split(self, grads, tau, theta, scene_extent, N=2):
+    def densify_and_split(self, grads, tau, theta, scene_extent, N=2, sel_mask=None):
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the per-point gradient condition
         padded_grad = torch.zeros((n_init_points), device="cuda")
@@ -458,9 +470,15 @@ class GaussianModel:
         padded_tau[:tau.shape[0]] = tau
         padded_theta = torch.zeros((n_init_points), device="cuda")
         padded_theta[:theta.shape[0]] = theta
-        selected_pts_mask = torch.where(padded_grad >= padded_tau, True, False)
-        selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values > padded_theta)
+        if sel_mask is not None:
+            # Explicit mask (Component B / A.1): computed on the pre-clone support;
+            # pad the appended clone children out with False.
+            selected_pts_mask = torch.zeros((n_init_points), device="cuda", dtype=bool)
+            selected_pts_mask[:sel_mask.shape[0]] = sel_mask.reshape(-1)
+        else:
+            selected_pts_mask = torch.where(padded_grad >= padded_tau, True, False)
+            selected_pts_mask = torch.logical_and(selected_pts_mask,
+                                                  torch.max(self.get_scaling, dim=1).values > padded_theta)
 
         stds = self.get_scaling[selected_pts_mask].repeat(N,1)
         means =torch.zeros((stds.size(0), 3),device="cuda")
@@ -480,11 +498,14 @@ class GaussianModel:
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
 
-    def densify_and_clone(self, grads, tau, theta):
+    def densify_and_clone(self, grads, tau, theta, sel_mask=None):
         # Extract points that satisfy the per-point gradient condition
-        selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= tau, True, False)
-        selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values <= theta)
+        if sel_mask is not None:
+            selected_pts_mask = sel_mask.reshape(-1).bool()
+        else:
+            selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= tau, True, False)
+            selected_pts_mask = torch.logical_and(selected_pts_mask,
+                                                  torch.max(self.get_scaling, dim=1).values <= theta)
         
         new_xyz = self._xyz[selected_pts_mask]
         new_features_dc = self._features_dc[selected_pts_mask]
@@ -524,7 +545,7 @@ class GaussianModel:
                   f"tau[{tau.min().item():.2e},{tau.max().item():.2e}] theta_mean={theta.mean().item():.2e}")
         return tau, theta
 
-    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii):
+    def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size, radii, camera=None):
         grads = self.xyz_gradient_accum / self.denom
         grads[grads.isnan()] = 0.0
 
@@ -537,8 +558,43 @@ class GaussianModel:
             tau = torch.full((_n,), max_grad, device="cuda")
             theta = torch.full((_n,), self.percent_dense * extent, device="cuda")
 
-        self.densify_and_clone(grads, tau, theta)
-        self.densify_and_split(grads, tau, theta, extent)
+        g = grads.reshape(-1)
+        max_scale = self.get_scaling.max(dim=1).values
+        can_split = max_scale > theta                 # baseline large-Gaussian gate
+        cand = g >= tau                               # per-Gaussian (A-modulated) gradient gate
+
+        # --- Component B: hard segment budget, allocated by fixable error ---
+        # (error x gradient). Candidates are the A/global gradient candidates; the
+        # budget keeps the top candidates per segment and never exceeds B*N slots.
+        if self.sgdc_enable and self.sgdc_budget_enable and bool(cand.any()):
+            from sgdc import budget as sgb
+            n_seg = int(self.seg_top1.max().item()) if self.seg_top1.numel() else 0
+            delta_total = int(self.sgdc_budget_B * self.get_xyz.shape[0])
+            if n_seg > 0 and delta_total > 0:
+                q = sgb.per_gaussian_priority(grads, self.seg_err_sum, self.seg_norm_sum,
+                                              use_error=not self.sgdc_budget_grad_only)
+                keep, delta_n = sgb.budget_mask(q, self.seg_top1, cand, delta_total, n_seg)
+                cand = keep
+                if getattr(self, "_sgdc_b_dbg", 0) < 6:
+                    self._sgdc_b_dbg = getattr(self, "_sgdc_b_dbg", 0) + 1
+                    print(f"[SGDC-B] n={self.get_xyz.shape[0]} B={self.sgdc_budget_B} "
+                          f"target={delta_total} kept={int(cand.sum())} segs={n_seg} "
+                          f"max_share={int(delta_n.max())} "
+                          f"err_mean={float((self.seg_err_sum / self.seg_norm_sum.clamp_min(1)).mean()):.4f}")
+
+        # --- Reading A.1: mask-boundary straddle decides clone vs split ---
+        # A candidate straddling a boundary is split (subdivide to resolve the
+        # edge) even when small; otherwise the baseline size gate decides.
+        split_sel = cand & can_split
+        if self.sgdc_enable and self.sgdc_signal_enable and camera is not None and bool(cand.any()):
+            idx = cand.nonzero(as_tuple=False).squeeze(-1)
+            straddle_full = torch.zeros_like(cand)
+            straddle_full[idx] = self.boundary_straddle(camera, idx, self.semantic_store)
+            split_sel = cand & (can_split | straddle_full)
+        clone_sel = cand & ~split_sel
+
+        self.densify_and_clone(grads, tau, theta, sel_mask=clone_sel)
+        self.densify_and_split(grads, tau, theta, extent, sel_mask=split_sel)
 
         prune_mask = (self.get_opacity < min_opacity).squeeze()
         if max_screen_size:
@@ -551,8 +607,13 @@ class GaussianModel:
 
         torch.cuda.empty_cache()
 
-    def add_semantic_stats(self, camera, visibility_filter, store):
-        """Accumulate per-Gaussian semantic signature from visible projections (spec §3.3)."""
+    def add_semantic_stats(self, camera, visibility_filter, store, residual=None):
+        """Accumulate per-Gaussian semantic signature from visible projections (spec §3.3).
+
+        ``residual`` (optional) is a ``[H, W]`` photometric residual map for this
+        view; when given, its value at each Gaussian's projected pixel is added to
+        ``seg_err_sum`` (the Component-B error signal).
+        """
         if store is None:
             return
         vis = visibility_filter.squeeze(-1)
@@ -585,6 +646,8 @@ class GaussianModel:
             self.seg_void_cnt[vis] += void[:, None].float()
             self.seg_dt_sum[vis] += d
             self.seg_norm_sum[vis] += 1.0
+            if residual is not None:
+                self.seg_err_sum[vis] += residual[vi, ui].unsqueeze(-1)
 
             prev = self.seg_top1[vis]
             hit = labeled & (lab == prev)
@@ -593,6 +656,91 @@ class GaussianModel:
             self.seg_top1[vis] = torch.where(first, lab, prev)
             cnt = self.seg_top1_cnt[vis]
             self.seg_top1_cnt[vis] = torch.where(first[:, None], torch.ones_like(cnt), cnt)
+
+    def _boundary_geometry(self, camera, idx, store, eps=1e-6):
+        """Projected-covariance boundary geometry for the Gaussians in ``idx``.
+
+        Returns ``None`` when the view has no semantic map, else a dict with, per
+        Gaussian: ``sd`` (signed boundary distance, px, >=0 inside its segment),
+        ``sig_perp`` (projected std along the boundary normal, px), ``psi``
+        (``0.5*erfc(sd/(sig_perp*sqrt2))`` in [0,1]), ``dt_pix``, ``seg``,
+        ``label_pix`` and the pixel indices ``ui``/``vi``.
+
+        Shared by the Component-C loss (``boundary_loss``) and the Component-A.1
+        clone/split signal (``boundary_straddle``) so the projection convention is
+        defined exactly once.
+        """
+        H, W = int(camera.image_height), int(camera.image_width)
+        sem = store.get(camera.image_name, H, W)
+        if sem is None:
+            return None
+        label, dt, normal = sem["label"], sem["dt"], sem["normal"]
+
+        mu = self.get_xyz[idx]
+        ones = torch.ones((mu.shape[0], 1), device=mu.device, dtype=mu.dtype)
+
+        # Pixel coordinates (rasterizer convention: ndc2Pix, row-vector product).
+        P = camera.full_proj_transform
+        p = torch.cat([mu, ones], dim=1) @ P
+        ndc = p[:, :3] / p[:, 3:4].clamp_min(1e-6)
+        ui = (((ndc[:, 0] + 1) * W - 1) / 2).round().long().clamp(0, W - 1)
+        vi = (((ndc[:, 1] + 1) * H - 1) / 2).round().long().clamp(0, H - 1)
+        dt_pix = dt[vi, ui]
+        seg = self.seg_top1[idx]
+
+        Wv = camera.world_view_transform
+        t = (torch.cat([mu, ones], dim=1) @ Wv)[:, :3]
+        tz = t[:, 2].clamp_min(1e-6)
+        tanx = math.tan(camera.FoVx * 0.5)
+        tany = math.tan(camera.FoVy * 0.5)
+        fx = 0.5 * W / tanx
+        fy = 0.5 * H / tany
+        tx = torch.clamp(t[:, 0] / tz, -1.3 * tanx, 1.3 * tanx) * tz
+        ty = torch.clamp(t[:, 1] / tz, -1.3 * tany, 1.3 * tany) * tz
+        n_pts = mu.shape[0]
+        J = torch.zeros((n_pts, 2, 3), device=mu.device, dtype=mu.dtype)
+        J[:, 0, 0] = fx / tz
+        J[:, 0, 2] = -(fx * tx) / (tz * tz)
+        J[:, 1, 1] = fy / tz
+        J[:, 1, 2] = -(fy * ty) / (tz * tz)
+
+        R = build_rotation(self._rotation[idx])
+        S = self.get_scaling[idx]
+        Sigma = R @ torch.diag_embed(S * S) @ R.transpose(1, 2)      # world cov
+        W3 = Wv[:3, :3]                                              # rasterizer W
+        Sigma_cam = W3.t() @ Sigma @ W3                              # = W^T Sigma W (CUDA: T^T Vrk T, T = W J)
+        Sig2 = J @ Sigma_cam @ J.transpose(1, 2) + eps * torch.eye(2, device=mu.device, dtype=mu.dtype)
+
+        lab_pix = label[vi, ui]
+        sd = torch.where(lab_pix == seg, dt_pix, -dt_pix)
+        nrm = normal[vi, ui]
+        nx, ny = nrm[:, 0], nrm[:, 1]
+        sig_perp = torch.sqrt(torch.clamp(
+            Sig2[:, 0, 0] * nx * nx + 2.0 * Sig2[:, 0, 1] * nx * ny + Sig2[:, 1, 1] * ny * ny,
+            min=eps))
+        psi = 0.5 * torch.erfc((sd / sig_perp) / math.sqrt(2.0))
+        return {"sd": sd, "sig_perp": sig_perp, "psi": psi, "dt_pix": dt_pix,
+                "seg": seg, "label_pix": lab_pix, "ui": ui, "vi": vi}
+
+    def boundary_straddle(self, camera, idx, store):
+        """Reading A: which Gaussians straddle a semantic boundary (bool over idx).
+
+        A Gaussian straddles when its projected mass reaches across the boundary,
+        i.e. its centre is within ``sgdc_split_k`` projected sigmas of it:
+        ``|sd| <= k * sig_perp``. Unlike Component A's centre-distance ``d_i`` this
+        is footprint-relative, so a large Gaussian near an edge is flagged even
+        when its centre sits a few pixels away. Restricted to boundary-adjacent,
+        labelled Gaussians.
+        """
+        empty = torch.zeros((idx.numel(),), dtype=torch.bool, device=self.get_xyz.device)
+        if store is None or idx.numel() == 0:
+            return empty
+        geo = self._boundary_geometry(camera, idx, store)
+        if geo is None:
+            return empty
+        band = (geo["dt_pix"] < self.sgdc_signal_band) & (geo["seg"] > 0)
+        straddle = geo["sd"].abs() <= self.sgdc_split_k * geo["sig_perp"]
+        return straddle & band
 
     def boundary_loss(self, camera, visibility_filter, store, band_px=32.0, eps=1e-6):
         """Cross-boundary scale regularizer (spec §4C).
@@ -609,66 +757,15 @@ class GaussianModel:
         vis = visibility_filter.squeeze(-1)
         if vis.numel() == 0:
             return zero
-        H, W = int(camera.image_height), int(camera.image_width)
-        sem = store.get(camera.image_name, H, W)
-        if sem is None:
+        geo = self._boundary_geometry(camera, vis, store, eps=eps)
+        if geo is None:
             return zero
-        label, dt, normal = sem["label"], sem["dt"], sem["normal"]
-
-        mu = self.get_xyz[vis]
-        ones = torch.ones((mu.shape[0], 1), device=mu.device, dtype=mu.dtype)
-
-        # Pixel coordinates (rasterizer convention: ndc2Pix, row-vector product).
-        P = camera.full_proj_transform
-        p = torch.cat([mu, ones], dim=1) @ P
-        ndc = p[:, :3] / p[:, 3:4].clamp_min(1e-6)
-        ui = (((ndc[:, 0] + 1) * W - 1) / 2).round().long().clamp(0, W - 1)
-        vi = (((ndc[:, 1] + 1) * H - 1) / 2).round().long().clamp(0, H - 1)
-        dt_pix = dt[vi, ui]
-        seg = self.seg_top1[vis]
-
-        near = (dt_pix < band_px) & (seg > 0)
+        near = (geo["dt_pix"] < band_px) & (geo["seg"] > 0)
         if near.sum() == 0:
             return zero
         idx = vis[near]
-
-        # Projected 2D covariance for the boundary-adjacent subset.
-        mu_n = self.get_xyz[idx]
-        ones_n = ones[near]
-        Wv = camera.world_view_transform
-        t = (torch.cat([mu_n, ones_n], dim=1) @ Wv)[:, :3]
-        tz = t[:, 2].clamp_min(1e-6)
-        tanx = math.tan(camera.FoVx * 0.5)
-        tany = math.tan(camera.FoVy * 0.5)
-        fx = 0.5 * W / tanx
-        fy = 0.5 * H / tany
-        tx = torch.clamp(t[:, 0] / tz, -1.3 * tanx, 1.3 * tanx) * tz
-        ty = torch.clamp(t[:, 1] / tz, -1.3 * tany, 1.3 * tany) * tz
-        n_pts = mu_n.shape[0]
-        J = torch.zeros((n_pts, 2, 3), device=mu_n.device, dtype=mu_n.dtype)
-        J[:, 0, 0] = fx / tz
-        J[:, 0, 2] = -(fx * tx) / (tz * tz)
-        J[:, 1, 1] = fy / tz
-        J[:, 1, 2] = -(fy * ty) / (tz * tz)
-
-        R = build_rotation(self._rotation[idx])
-        S = self.get_scaling[idx]
-        Sigma = R @ torch.diag_embed(S * S) @ R.transpose(1, 2)      # world cov
-        W3 = Wv[:3, :3]                                              # rasterizer W
-        Sigma_cam = W3.t() @ Sigma @ W3                              # = W^T Sigma W (CUDA: T^T Vrk T, T = W J)
-        Sig2 = J @ Sigma_cam @ J.transpose(1, 2) + eps * torch.eye(2, device=mu_n.device, dtype=mu_n.dtype)
-
-        lab_pix = label[vi[near], ui[near]]
-        sd = torch.where(lab_pix == seg[near], dt_pix[near], -dt_pix[near])
-        nrm = normal[vi[near], ui[near]]
-        nx, ny = nrm[:, 0], nrm[:, 1]
-        sig_perp = torch.sqrt(torch.clamp(
-            Sig2[:, 0, 0] * nx * nx + 2.0 * Sig2[:, 0, 1] * nx * ny + Sig2[:, 1, 1] * ny * ny,
-            min=eps))
-        z = sd / sig_perp
-        psi = 0.5 * torch.erfc(z / math.sqrt(2.0))
         alpha = self.get_opacity[idx].squeeze(-1)
-        return (alpha * psi).sum() / max(vis.numel(), 1)
+        return (alpha * geo["psi"][near]).sum() / max(vis.numel(), 1)
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)

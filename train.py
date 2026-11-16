@@ -126,6 +126,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
+        # SGDC Component B: photometric residual map for segment error budgeting.
+        sgdc_residual = None
+        if getattr(opt, "sgdc_budget_enable", False) and getattr(gaussians, "sgdc_enable", False):
+            sgdc_residual = (image.detach() - gt_image).abs().mean(dim=0)
         Ll1 = l1_loss(image, gt_image)
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
@@ -187,11 +191,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                 gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
                 if getattr(gaussians, "sgdc_enable", False):
-                    gaussians.add_semantic_stats(viewpoint_cam, visibility_filter, gaussians.semantic_store)
+                    gaussians.add_semantic_stats(viewpoint_cam, visibility_filter, gaussians.semantic_store,
+                                                 residual=sgdc_residual)
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii)
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii,
+                                                camera=viewpoint_cam)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()

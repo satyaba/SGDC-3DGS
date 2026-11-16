@@ -264,31 +264,55 @@ sel = (g >= tau) & (self.get_scaling.max(dim=1).values <= theta)   # tau, theta 
 
 where `tau`, `theta` are computed in a new `compute_sgdc_thresholds()` from `seg_dt_sum/seg_tot_cnt`.
 
-### Component B — Per-segment budget allocation
+### Component A.1 — Mask-boundary straddle decides clone vs split (implemented)
 
-**Mechanism.** Cap total additions per refine step at $B$; distribute across segments by priority $p_c=\frac{R_c}{\sqrt{A_c}}\big(1+\gamma_{\text{edge}}\frac{|\partial\mathcal R_c|}{A_c}\big)$.
+**Mechanism.** The baseline size gate decides clone (small) vs split (large).
+A.1 adds a footprint-relative boundary signal: a Gaussian whose *projected mass
+reaches across* the semantic boundary of its own segment is **split** even when
+small, so capacity is instantiated as finer Gaussians exactly where the mask says
+a geometric edge must be resolved:
 
 $$
-\Delta N_c=B\,\frac{p_c}{\sum_{c'}p_{c'}}.
+\text{straddle}_i=\big(|sd_i|\le k\,\sigma_{\perp,i}\big)\wedge(dt_i<\delta_{\text{sig}})\wedge(s_i>0),
+\qquad
+\text{split if } (\max(s_i)>\theta_i)\ \vee\ \text{straddle}_i .
 $$
 
-Candidates within each segment are ranked by $\|g_i\|$; keep top-$\Delta N_c$.
+$sd_i,\sigma_{\perp,i}$ are the signed boundary distance and projected std along
+the boundary normal (shared with Component C via `_boundary_geometry`). Unlike
+Component A's centre-distance $d_i$, this is footprint-relative: a large Gaussian
+near an edge is flagged even when its centre is a few pixels away.
 
-**Edit `densify_and_prune`** — after forming clone/split candidate sets, mask each set by a per-segment top-k selection:
+**Implementation — `boundary_straddle()`**, applied in `densify_and_prune` after
+the B budget (chain: budget picks candidates → straddle picks clone vs split).
+CLI: `--sgdc_signal_enable`, `--sgdc_split_k`, `--sgdc_signal_band`.
 
-```python
-# src/sgdc/budget.py
-def segment_topk_mask(grads, seg_top1, delta_N, candidate_mask):
-    keep = torch.zeros_like(candidate_mask)
-    for c, budget in enumerate(delta_N):
-        idx = (seg_top1 == c) & candidate_mask
-        if idx.any():
-            g = grads[idx].squeeze(-1)
-            k = min(int(budget), idx.sum().item())
-            thr = g.topk(k).values.min()
-            keep[idx] = g >= thr
-    return keep
-```
+### Component B — Per-segment error budgeting (implemented)
+
+**Mechanism.** Cap additions per refine step at $B$ (fraction of current $N$) and
+distribute across segments by **fixable error**. The priority folds the
+view-space gradient (a *benefit* proxy) into the photometric residual (a *need*
+proxy), so the budget is not wasted on unrecoverable regions (sky, specular,
+blur) where adding capacity cannot help:
+
+$$
+q_i=\|g_i\|\cdot e_i,\qquad e_i=\frac{\texttt{seg\_err\_sum}_i}{\texttt{seg\_norm\_sum}_i},
+\qquad
+p_c=\frac{\sum_{i:s_i=c}q_i}{\sqrt{n_c}},\qquad
+\Delta N_c=B\,\frac{p_c}{\sum_{c'}p_{c'}},
+$$
+
+where $n_c$ is the number of Gaussians currently assigned to $c$ (a
+capacity-normalized error: "error per unit capacity"). Candidates within a
+segment are ranked by the same $q_i$ and the top $\Delta N_c$ are kept; leftover
+slack (segments short of candidates) is topped up from the global pool, so the
+cap $B$ is a hard ceiling but is never left unspent while candidates remain.
+
+**Implementation — `sgdc/budget.py`** (`per_gaussian_priority`, `segment_priority`,
+`allocate` [largest-remainder], `budget_mask` [per-segment top-k + top-up]). The
+mask is applied in `densify_and_prune` *before* clone/split run; `seg_err_sum` is
+accumulated in `add_semantic_stats` from the current view's `|render − GT|` map.
+CLI: `--sgdc_budget_enable`, `--sgdc_budget_B`, `--sgdc_budget_grad_only`.
 
 ### Component C — Cross-boundary scale regularizer
 
@@ -380,23 +404,22 @@ New buffers are **not** nn.Parameters, so they are handled exactly like `xyz_gra
 ## 6. New CLI args — `arguments/__init__.py` (`OptimizationParams`)
 
 ```python
-# SGDC
-self.sgdc_enable       = False          # master switch (code-tied ablation)
-self.seg_path          = ""             # <source_path>/seg
-self.use_component     = [True]*5       # A B C D E toggles
-self.f_b               = 0.5            # boundary threshold factor
-self.f_int             = 2.0            # interior threshold factor
-self.eta               = 0.3            # split-threshold shrink
-self.budget_B          = 0.05           # slot budget / refine step (frac of N)
-self.gamma_edge        = 1.0
-self.lambda_bnd        = 0.02
-self.delta_band        = 3.0            # px boundary exclusion band
-self.rho_min           = 0.4
-self.eps_imp           = 0.02
-self.nu_max            = 0.6
-self.r_thr             = 0.05
-self.beta0, self.beta1, self.beta2 = -4.6, 2.0, 2.0
-self.s_stab            = 1.0
+# SGDC (as implemented; A, B, A.1 and C are live, D/E are spec-only)
+self.sgdc_enable        = False   # master switch (code-tied ablation)
+self.sgdc_adapter       = "replica"
+self.f_b                = 0.5     # A: boundary threshold factor
+self.f_int              = 2.0     # A: interior threshold factor
+self.eta                = 0.3     # A: split-threshold shrink
+self.sgdc_dt_norm       = 100.0   # A: px normalizer for boundary distance d_i
+self.sgdc_budget_enable = False   # B: hard per-refine error budget
+self.sgdc_budget_B      = 0.05    # B: budget / refine step (frac of N)
+self.sgdc_budget_grad_only=False # B: drop residual (q = |grad| only)
+self.sgdc_signal_enable = False   # A.1: straddle-driven clone/split
+self.sgdc_split_k       = 1.0     # A.1: straddle if |sd| <= k * sigma_perp
+self.sgdc_signal_band   = 32.0    # A.1: boundary band (px)
+self.lambda_bnd         = 0.0     # C: cross-boundary scale loss weight
+self.sgdc_bnd_start     = 500     # C: apply from this iteration
+self.sgdc_bnd_band      = 32.0    # C: boundary band (px)
 ```
 
 ---
@@ -413,14 +436,21 @@ every opt.densification_interval iters, densify_from_iter < it < densify_until_i
   grads <- xyz_gradient_accum / denom                            (gaussian_model.py:453)
   rho, nu, d <- derive(seg_*)                                    [SGDC §3.2]
 
-  # A + B: clone / split candidates
+  # A: per-Gaussian clone / split gates
   tau   <- tau_g [ f_b(1-d) + f_int d ]                          [SGDC §4A]
   theta <- S * percent_dense * (1 - eta(1-d))                    [SGDC §4A]
-  clone_sel <- (grads >= tau) & (max_scale <= theta)
-  split_sel <- (grads >= tau) & (max_scale >  theta)
-  clone_sel <- segment_topk_mask(grads, seg_top1, dN, clone_sel) [SGDC §4B]
-  split_sel <- segment_topk_mask(grads, seg_top1, dN, split_sel) [SGDC §4B]
-  densify_and_clone(...); densify_and_split(...)                 (gaussian_model.py:435,409)
+  cand  <- grads >= tau
+
+  # B: hard error budget over candidates (chain step 1)            [SGDC §4B]
+  q     <- |grads| * (seg_err_sum/seg_norm_sum)                  [SGDC §4B]
+  cand  <- budget_mask(q, seg_top1, cand, B*N)                   (sgdc/budget.py)
+
+  # A.1: mask-boundary straddle picks clone vs split (chain step 2) [SGDC §4A.1]
+  straddle  <- (|sd| <= k*sig_perp) & (dt<band) & (seg>0)        (camera = current view)
+  split_sel <- cand & (max_scale > theta | straddle)
+  clone_sel <- cand & ~split_sel
+  densify_and_clone(grads, tau, theta, sel_mask=clone_sel)       (gaussian_model.py)
+  densify_and_split(grads, tau, theta, extent, sel_mask=split_sel)
 
   # D: prune
   prune_mask <- opacity<eps | radii>S*| scale>0.1 S

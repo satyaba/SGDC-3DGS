@@ -56,17 +56,29 @@ Runs:
 | `sgdc_c_bnd02_30k` | `sgdc` | 30000 | Component C: `lambda_bnd 0.02` (A neutral) |
 | `sgdc_c_bnd10_30k` | `sgdc` | 30000 | Component C: `lambda_bnd 0.10` (A neutral) |
 | `sgdc_c_bnd50_30k` | `sgdc` | 30000 | Component C: `lambda_bnd 0.50` (A neutral) |
+| `sgdc_b_30k` | `sgdc` | 30000 | Component B: error budget `B 0.05` (A neutral) |
+| `sgdc_bsig_30k` | `sgdc` | 30000 | B + A.1: error budget + straddle clone/split |
+| `sgdc_sig_30k` | `sgdc` | 30000 | A.1 only: straddle clone/split (no budget) |
 | `vanilla_sanity` | `vanilla_3dgs` | 3000 | SANITY smoke test |
 | `base_sanity` | `sgdc` | 3000 | SANITY: SGDC off |
 | `sgdc_a_sanity` | `sgdc` | 3000 | SANITY: Component A default |
 | `sgdc_c_sanity` | `sgdc` | 3000 | SANITY: Component C (`lambda_bnd 0.10`) |
+| `sgdc_b_sanity` | `sgdc` | 3000 | SANITY: Component B (error budget) |
+| `sgdc_bsig_sanity` | `sgdc` | 3000 | SANITY: Component B + A.1 |
 
 **Component A** (boundary-aware density control) scales the clone/split gradient
 threshold per Gaussian by its distance to a semantic boundary
 (`--f_b` boundary / `--f_int` interior / `--sgdc_dt_norm` px normalizer / `--eta`
-split-threshold shrink). **Component C** (cross-boundary scale regularizer) adds
-an `erfc`-footprint scale loss on boundary Gaussians (`--lambda_bnd`); its runs
-neutralise A so only C acts. See `docs/sgdc_spec.md`.
+split-threshold shrink). **Component B** (segment-level error budgeting) caps
+additions per refine step at `--sgdc_budget_B * N` and allocates those slots
+across segments by *fixable error* (`|grad| * residual`, `--sgdc_budget_enable`;
+`--sgdc_budget_grad_only` drops the residual). **Component A.1** (mask-boundary
+straddle) splits a Gaussian whose projected mass crosses a semantic boundary
+(`--sgdc_signal_enable` / `--sgdc_split_k`). **Component C** (cross-boundary
+scale regularizer) adds an `erfc`-footprint scale loss on boundary Gaussians
+(`--lambda_bnd`). The C and B runs neutralise A (`--f_b 1.0 --f_int 1.0 --eta
+0.0`) so only their own component acts. **B and A.1 chain**: the budget picks the
+candidates, the straddle signal picks clone vs split. See `docs/sgdc_spec.md`.
 
 The **sanity runs** reuse the exact full-run configs at 3 000 iterations —
 enough to cross the first densification (500), hit the opacity reset (3000), and

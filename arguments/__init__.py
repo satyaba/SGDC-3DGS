@@ -107,6 +107,14 @@ class OptimizationParams(ParamGroup):
         self.lambda_bnd = 0.0           # Component C: cross-boundary scale loss weight
         self.sgdc_bnd_start = 500       # apply Component C from this iteration
         self.sgdc_bnd_band = 32.0       # only regularize Gaussians within this px of a boundary
+        # Component B: segment-level error budgeting (sgdc/budget.py)
+        self.sgdc_budget_enable = False  # hard per-refine budget allocated by fixable error
+        self.sgdc_budget_B = 0.05        # budget as fraction of current N per refine step
+        self.sgdc_budget_grad_only = False  # priority q = |grad| only (drop the residual term)
+        # Reading A.1: mask-boundary straddle drives clone vs split
+        self.sgdc_signal_enable = False  # split Gaussians whose footprint straddles a boundary
+        self.sgdc_split_k = 1.0          # straddle if |sd| <= k * sigma_perp
+        self.sgdc_signal_band = 32.0     # only consider Gaussians within this px of a boundary
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):
