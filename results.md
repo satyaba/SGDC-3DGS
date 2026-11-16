@@ -112,17 +112,17 @@ is **not** row-comparable; run it separately when the upstream number is needed.
   the rasterizer backwards use atomics → run-to-run variance of roughly
   **±0.2 dB PSNR and ±2–3% Gaussian count** (quantified below).
 
-## Summary (office_0/Sequence_1, single run each)
+## Summary (office_0/Sequence_1)
 
-- **Both components independently beat the baseline on the quality-vs-count
-  Pareto**: they reach base-or-better PSNR/SSIM/LPIPS at fewer Gaussians
-  (B: −5–13% with +0.3–0.4 dB; A.1 alone: −11% with +0.23 dB and tied
-  SSIM/LPIPS), and train correspondingly faster.
-- **B is a capacity cap, not segmentation.** At n=3 the per-segment vs
-  scene-global band gap is +0.08 dB (~1.2σ, not significant) and test PSNR is
-  tied — the segment allocation adds nothing measurable. The **cap itself** is
-  the robust effect (both arms ≈+0.25 dB at ~11% fewer Gaussians), and the error
-  *weighting* also does nothing (`grad_only` ties).
+- **The budget (B) buys ~11% fewer Gaussians at statistically equal test PSNR**
+  (n=3), paying a small SSIM/LPIPS regression. The earlier single-run "+0.3 dB
+  over base" was base's one low sample. A.1 alone (−11% Gaussians, +0.23 dB,
+  single run) is comparable in magnitude.
+- **B is a plain capacity cap — no segmentation, no error signal, and no quality
+  gain.** At n=3 the per-segment vs scene-global band gap is +0.08 dB (~1.2σ,
+  n.s.) with test PSNR/SSIM/LPIPS tied; the error *weighting* also does nothing
+  (`grad_only` ties). It regularizes (smaller train−test gap) rather than
+  improving placement.
 - **A.1 alone is competitive and perceptual-metric-safe, but does not
   specifically improve boundary PSNR** despite targeting boundaries; stacking it
   on B is not additive.
@@ -151,49 +151,57 @@ rows below keep Component A neutral (`--f_b 1.0 --f_int 1.0 --eta 0.0`).
 | `sgdc_b_30k_B0.15`    | 0.15            | 338,209 | 43.43 | 36.90 | 0.9767 | 0.0497 | 31.68 | 39.91 | 16.98 |
 | `sgdc_bglobal_30k`    | 0.10 (global)   | 316,686 | 43.36 | 36.66 | 0.9765 | 0.0504 | 31.51 | 39.68 | 16.05 |
 
+*`base_30k` here is a single sample; its n=3 statistics are in the repeated
+comparison below. The sweep rows are single runs (exploratory); only the `B=0.10`
+arm was repeated.*
+
 **Observations.**
 
-- B is a clean, monotone capacity knob: Gaussian count tracks `B`
+- B is a monotone capacity knob: Gaussian count tracks `B`
   (100k → 261k → 310k → 338k), quality rises then saturates.
-- B dominates the baseline on the Pareto front. At `B=0.10` (310k) test PSNR is
-  **36.79 vs base's 36.50 at 355k**; at `B=0.15` (338k) it is **36.90** — i.e.
-  ~+0.3–0.4 dB with **5–13% fewer Gaussians**. At `B=0.15` SSIM/LPIPS are
-  essentially tied with base (0.9767/0.0497 vs 0.9769/0.0487).
-- The **error term does not clearly help**: `grad_only` (36.91, band 31.73) is at
-  least as good as the error-weighted version (36.86, band 31.60). Within the
-  noise floor the mechanism is dominated by **capacity regularization**, not by
-  smarter placement. The residual weighting is an optional refinement.
-- Lower Gaussian count also shortens training time (16.99 → ~14–15 min).
+- The **error term does not help**: `grad_only` (36.91, band 31.73) ties the
+  error-weighted version (36.86, band 31.60).
+- The single-run "Pareto win" over base below was an **artifact of base's one low
+  sample**; with repeats the budget arms are *statistically tied with base on test
+  PSNR at ~11% fewer Gaussians* (next subsection).
+- Lower Gaussian count also shortens training time.
 
-**Segmentation attribution — scene-global control (`--sgdc_budget_global`), n=3.**
-At matched `B=0.10`, ranking candidates globally instead of per segment
-(3 stochastic repeats each; mean ± sample std):
+**Repeated comparison (n=3, `B=0.10`).** Mean ± sample std over 3 stochastic
+repeats per arm (base: `base_30k`, `base_30k_r1`, `base_30k_r2`; per-segment:
+`sgdc_b_30k_B0.1`, `sgdc_b_30k_seg_r1`, `sgdc_b_30k_seg_r2`; global:
+`sgdc_bglobal_30k`, `sgdc_bglobal_30k_glob_r1`, `sgdc_bglobal_30k_glob_r2`):
 
-| allocation | Gaussians | Test PSNR | Band | Interior |
-|---|---|---|---|---|
-| per-segment | 313,684 ± 2,918 | 36.75 ± 0.03 | 31.66 ± 0.09 | 39.67 ± 0.03 |
-| global      | 316,312 ± 348   | 36.74 ± 0.08 | 31.58 ± 0.08 | 39.76 ± 0.07 |
+| Arm | n | Gaussians | Train PSNR | Test PSNR | Test SSIM | Test LPIPS | Band | Interior | Train−Test gap |
+|---|---|---|---|---|---|---|---|---|---|
+| base | 3 | 353,126 ± 1,849 | 43.58 ± 0.10 | 36.64 ± 0.13 | 0.97693 ± 0.00006 | **0.04867 ± 0.00035** | 31.53 ± 0.07 | 39.68 ± 0.20 | 6.94 |
+| per-segment | 3 | **313,684 ± 2,918** | 43.30 ± 0.09 | **36.75 ± 0.03** | 0.97657 ± 0.00012 | 0.05120 ± 0.00010 | **31.66 ± 0.09** | 39.67 ± 0.03 | 6.55 |
+| global | 3 | 316,312 ± 348 | 43.34 ± 0.09 | 36.74 ± 0.08 | 0.97660 ± 0.00010 | 0.05070 ± 0.00025 | 31.58 ± 0.08 | 39.76 ± 0.07 | 6.60 |
 
-(per-segment: `sgdc_b_30k_B0.1`, `sgdc_b_30k_seg_r1`, `sgdc_b_30k_seg_r2`;
-global: `sgdc_bglobal_30k`, `sgdc_bglobal_30k_glob_r1`, `sgdc_bglobal_30k_glob_r2`.)
+Deltas:
 
-- **The single-run band gap did not survive repeats.** The earlier +0.24 dB
-  (31.75 vs 31.51) was noise: at n=3 the per-segment−global band gap is
-  **+0.08 dB (SE ≈ 0.07, ~1.2σ, not significant)** and the distributions overlap
-  (per-segment 31.57–31.75, global 31.51–31.67).
-- **Test PSNR is tied** (36.75 vs 36.74); interior is, if anything, slightly
-  *higher* for global (39.76 vs 39.67); counts are within ~1%.
-- **Conclusion: the per-segment allocation provides no significant benefit**
-  over a scene-global budget. The segmentation-guided attribution is **not
-  supported**; B is a plain capacity cap. The error *weighting* also does nothing
-  (`grad_only` ties the error version).
-- The **capacity cap itself is the robust effect** (both arms ≈36.74–36.75 at
-  ~314–316k vs base 36.50 at 355k), but base is still n=1 — repeat it to confirm.
+| Comparison | ΔGaussians | ΔTest PSNR | ΔSSIM | ΔLPIPS | ΔBand | ΔInterior |
+|---|---|---|---|---|---|---|
+| per-segment − global | −2,628 (−0.8%) | +0.01 | 0.0000 | +0.0005 | +0.08 | −0.09 |
+| per-segment − base | **−39,442 (−11.2%)** | +0.11 | −0.0004 | +0.0025 | +0.13 | −0.01 |
+| global − base | **−36,814 (−10.4%)** | +0.10 | −0.0003 | +0.0020 | +0.05 | +0.08 |
 
-**Variance.** The two identical `B=0.05` runs differ (267,931 vs 261,519
-Gaussians; 36.86 vs 36.66 test PSNR). Treat the base-vs-B gaps as ~1.5–2σ
-pending repeats; the direction is consistent across both `B=0.05` runs and the
-`B=0.10/0.15` points.
+**Reading.**
+
+- **Quality is statistically tied with base.** Test PSNR +0.10/+0.11 (SE ≈ 0.08,
+  ~1.2–1.4σ) and band/interior within ~2σ; base also carries the largest variance
+  (±0.13 dB), so the earlier single-run +0.25 was noise.
+- **The robust effect is count: ~11% fewer Gaussians** (313.7k / 316.3k vs
+  353.1k) — a large, consistent effect relative to its std.
+- **Small but significant perceptual cost:** SSIM −0.0004 and LPIPS +0.0020–0.0025
+  for both arms (well outside the noise floor).
+- **Less overfitting:** arms have lower train PSNR and a smaller train−test gap
+  (6.55/6.60 vs 6.94).
+- **Segmentation still inert:** per-segment vs global band gap +0.08 (SE ≈ 0.07,
+  n.s.), test PSNR/SSIM/LPIPS tied. The per-segment allocation provides no
+  measurable benefit.
+- **Net:** the budget buys **~11% fewer Gaussians at statistically equal test
+  PSNR**, paying a small SSIM/LPIPS regression. It does **not** improve quality,
+  and neither the segment allocation nor the error weighting contributes.
 
 ## Component A.1 — mask-boundary straddle clone/split
 
@@ -209,21 +217,20 @@ picks candidates, the straddle signal picks clone vs split.
 
 **Observations.**
 
-- **A.1 alone is a viable standalone:** −10.9% Gaussians vs base with test PSNR
-  **+0.23**, SSIM **tied** (0.9769) and LPIPS **tied** (0.0489 vs 0.0487), band
-  +0.10, interior +0.32, and the **highest train PSNR** of any run (43.64). So it
-  buys compression without a perceptual-metric cost.
-- **But it does not specifically help boundaries.** Band is only +0.10 over base
-  and is *below* Component B's band at the same tool — despite A.1 targeting
-  boundaries. The straddle split behaves more like a mild capacity
-  regularizer / better split placement than a boundary-quality booster.
+- **A.1 alone ≈ base quality at ~11% fewer Gaussians.** Against the n=3 base
+  mean (`36.64`), A.1's `36.73` is +0.09 on a single run (within noise); SSIM
+  **tied** (0.9769), LPIPS **tied** (0.0489 vs 0.0487), band +0.04, interior
+  +0.09. The earlier "+0.23" was measured against base's single low run.
+- **But it does not specifically help boundaries.** Band is only +0.04 over the
+  base mean (and *below* Component B's band) — despite A.1 targeting boundaries.
+  The straddle split behaves like a mild capacity regularizer rather than a
+  boundary booster.
 - **Stacking on B is not additive.** `bsig` (B 0.05 + A.1) is 36.79 vs B-alone's
   36.86 / 36.66, band is flat (31.61 vs 31.60 / 31.41), and LPIPS is worse
   (0.0544). Don't combine them blindly.
 - **At matched count (~310–316k)** the two have different trade-offs: `B0.10`
-  (310k) has higher PSNR/band (36.79 / 31.75) but worse SSIM/LPIPS
-  (0.9765 / 0.0513); `A.1` (316k) has lower PSNR/band (36.73 / 31.57) but better
-  SSIM/LPIPS (0.9769 / 0.0489).
+  has higher PSNR/band but worse SSIM/LPIPS; `A.1` has lower PSNR/band but better
+  SSIM/LPIPS.
 - **Pending:** a `--sgdc_split_k` sweep (0.5 / 1.0 / 2.0) for A.1, and repeats
   for error bars.
 
