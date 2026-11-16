@@ -118,11 +118,11 @@ is **not** row-comparable; run it separately when the upstream number is needed.
   Pareto**: they reach base-or-better PSNR/SSIM/LPIPS at fewer Gaussians
   (B: −5–13% with +0.3–0.4 dB; A.1 alone: −11% with +0.23 dB and tied
   SSIM/LPIPS), and train correspondingly faster.
-- **B decomposes into cap + allocation.** The hard capacity cap regularizes
-  globally (both global and per-segment beat base on test PSNR); the
-  **per-segment allocation** is what moves the boundary band (global control:
-  band +0.04 vs base; per-segment: +0.28). The error *weighting* itself does
-  nothing (`grad_only` ties the error version).
+- **B is a capacity cap, not segmentation.** At n=3 the per-segment vs
+  scene-global band gap is +0.08 dB (~1.2σ, not significant) and test PSNR is
+  tied — the segment allocation adds nothing measurable. The **cap itself** is
+  the robust effect (both arms ≈+0.25 dB at ~11% fewer Gaussians), and the error
+  *weighting* also does nothing (`grad_only` ties).
 - **A.1 alone is competitive and perceptual-metric-safe, but does not
   specifically improve boundary PSNR** despite targeting boundaries; stacking it
   on B is not additive.
@@ -165,24 +165,30 @@ rows below keep Component A neutral (`--f_b 1.0 --f_int 1.0 --eta 0.0`).
   smarter placement. The residual weighting is an optional refinement.
 - Lower Gaussian count also shortens training time (16.99 → ~14–15 min).
 
-**Segmentation attribution — scene-global control (`--sgdc_budget_global`).** At
-matched `B=0.10`, ranking candidates globally instead of per segment:
+**Segmentation attribution — scene-global control (`--sgdc_budget_global`), n=3.**
+At matched `B=0.10`, ranking candidates globally instead of per segment
+(3 stochastic repeats each; mean ± sample std):
 
-| allocation | Gaussians | Test PSNR | Band | Interior | Δglobal vs base | Δband vs base |
-|---|---|---|---|---|---|---|
-| per-segment (`sgdc_b_30k_B0.1`) | 310,566 | 36.79 | **31.75** | 39.66 | **+0.29** | **+0.28** |
-| global (`sgdc_bglobal_30k`)     | 316,686 | 36.66 | 31.51 | 39.68 | +0.16 | +0.04 |
+| allocation | Gaussians | Test PSNR | Band | Interior |
+|---|---|---|---|---|
+| per-segment | 313,684 ± 2,918 | 36.75 ± 0.03 | 31.66 ± 0.09 | 39.67 ± 0.03 |
+| global      | 316,312 ± 348   | 36.74 ± 0.08 | 31.58 ± 0.08 | 39.76 ± 0.07 |
 
-- The **capacity cap alone** regularizes globally: the global control beats base
-  on test PSNR (+0.16) but leaves the **band flat (+0.04)**.
-- The **per-segment allocation** is what moves the band: per-segment is +0.24
-  band and +0.13 test PSNR over the global control at ~2% fewer Gaussians. This
-  is the **only boundary-specific gain** observed across A, A.1, C, and B — and
-  it does *not* collapse interiors the way Component A did.
-- The **error weighting itself does nothing**: `grad_only` (band 31.73) ties the
-  error-weighted version (31.75). Allocation matters; the residual term does not.
-- **Caveat:** +0.24 dB is ~1σ at the ±0.2 dB noise floor and is a single run.
-  Repeats of per-segment vs global at `B=0.10` are needed to make it significant.
+(per-segment: `sgdc_b_30k_B0.1`, `sgdc_b_30k_seg_r1`, `sgdc_b_30k_seg_r2`;
+global: `sgdc_bglobal_30k`, `sgdc_bglobal_30k_glob_r1`, `sgdc_bglobal_30k_glob_r2`.)
+
+- **The single-run band gap did not survive repeats.** The earlier +0.24 dB
+  (31.75 vs 31.51) was noise: at n=3 the per-segment−global band gap is
+  **+0.08 dB (SE ≈ 0.07, ~1.2σ, not significant)** and the distributions overlap
+  (per-segment 31.57–31.75, global 31.51–31.67).
+- **Test PSNR is tied** (36.75 vs 36.74); interior is, if anything, slightly
+  *higher* for global (39.76 vs 39.67); counts are within ~1%.
+- **Conclusion: the per-segment allocation provides no significant benefit**
+  over a scene-global budget. The segmentation-guided attribution is **not
+  supported**; B is a plain capacity cap. The error *weighting* also does nothing
+  (`grad_only` ties the error version).
+- The **capacity cap itself is the robust effect** (both arms ≈36.74–36.75 at
+  ~314–316k vs base 36.50 at 355k), but base is still n=1 — repeat it to confirm.
 
 **Variance.** The two identical `B=0.05` runs differ (267,931 vs 261,519
 Gaussians; 36.86 vs 36.66 test PSNR). Treat the base-vs-B gaps as ~1.5–2σ
