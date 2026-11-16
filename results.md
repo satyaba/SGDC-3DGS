@@ -112,6 +112,20 @@ is **not** row-comparable; run it separately when the upstream number is needed.
   the rasterizer backwards use atomics → run-to-run variance of roughly
   **±0.2 dB PSNR and ±2–3% Gaussian count** (quantified below).
 
+## Summary (office_0/Sequence_1, single run each)
+
+- **Both components independently beat the baseline on the quality-vs-count
+  Pareto**: they reach base-or-better PSNR/SSIM/LPIPS at fewer Gaussians
+  (B: −5–13% with +0.3–0.4 dB; A.1 alone: −11% with +0.23 dB and tied
+  SSIM/LPIPS), and train correspondingly faster.
+- **B's gain is dominated by capacity regularization** — the error-weighted
+  priority is not clearly better than gradient-only budgeting.
+- **A.1 alone is competitive and perceptual-metric-safe, but does not
+  specifically improve boundary PSNR** despite targeting boundaries; stacking it
+  on B is not additive.
+- Single scene, and run-to-run seed variance is ±0.2 dB — repeats are needed
+  before claiming significance.
+
 ## Component B — segment-level error budgeting
 
 Hard per-refine budget of `--sgdc_budget_B * N` slots, allocated across segments
@@ -154,18 +168,31 @@ Splits a candidate whose projected mass crosses a semantic boundary
 (`|sd| <= k * sigma_perp`, `--sgdc_signal_enable`). Chained after B: the budget
 picks candidates, the straddle signal picks clone vs split.
 
-| Run | Config | Gaussians | Test PSNR | SSIM | LPIPS | Band PSNR | Interior PSNR |
-|---|---|---|---|---|---|---|---|
-| `sgdc_bsig_30k` | B 0.05 + A.1 (k=1.0) | 247,067 | 36.79 | 0.9757 | 0.0544 | 31.61 | 39.73 |
+| Run | Config | Gaussians | Train PSNR | Test PSNR | SSIM | LPIPS | Band PSNR | Interior PSNR |
+|---|---|---|---|---|---|---|---|---|
+| `base_30k`      | —                      | 355,256 | 43.50 | 36.50 | 0.9769 | 0.0487 | 31.47 | 39.45 |
+| `sgdc_sig_30k`  | A.1 only (k=1.0)       | 316,501 | **43.64** | 36.73 | **0.9769** | **0.0489** | 31.57 | 39.77 |
+| `sgdc_bsig_30k` | B 0.05 + A.1 (k=1.0)   | 247,067 | 43.03 | 36.79 | 0.9757 | 0.0544 | 31.61 | 39.73 |
 
 **Observations.**
 
-- A.1 on top of B compresses further (247k, −30% vs base) but test PSNR slips
-  slightly vs B alone (36.79 vs 36.86 / 36.66) and the **band is flat**
-  (31.61 vs 31.60 / 31.41) — the boundary quality A.1 targets does not move.
-  A single point, so not conclusive; A.1 does not yet earn its keep.
-- **Pending:** `sgdc_sig_30k` (A.1 alone, no budget) to isolate its effect, and a
-  `--sgdc_split_k` sweep (0.5 / 1.0 / 2.0).
+- **A.1 alone is a viable standalone:** −10.9% Gaussians vs base with test PSNR
+  **+0.23**, SSIM **tied** (0.9769) and LPIPS **tied** (0.0489 vs 0.0487), band
+  +0.10, interior +0.32, and the **highest train PSNR** of any run (43.64). So it
+  buys compression without a perceptual-metric cost.
+- **But it does not specifically help boundaries.** Band is only +0.10 over base
+  and is *below* Component B's band at the same tool — despite A.1 targeting
+  boundaries. The straddle split behaves more like a mild capacity
+  regularizer / better split placement than a boundary-quality booster.
+- **Stacking on B is not additive.** `bsig` (B 0.05 + A.1) is 36.79 vs B-alone's
+  36.86 / 36.66, band is flat (31.61 vs 31.60 / 31.41), and LPIPS is worse
+  (0.0544). Don't combine them blindly.
+- **At matched count (~310–316k)** the two have different trade-offs: `B0.10`
+  (310k) has higher PSNR/band (36.79 / 31.75) but worse SSIM/LPIPS
+  (0.9765 / 0.0513); `A.1` (316k) has lower PSNR/band (36.73 / 31.57) but better
+  SSIM/LPIPS (0.9769 / 0.0489).
+- **Pending:** a `--sgdc_split_k` sweep (0.5 / 1.0 / 2.0) for A.1, and repeats
+  for error bars.
 
 ## Reproduce
 
