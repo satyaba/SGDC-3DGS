@@ -88,3 +88,91 @@ Enabling the `--train_test_exp` option includes the left half of the test images
 
 We report the training times with all features enabled using the original 3dgs rasterizer *(baseline)* and the accelerated rasterizer with default optimizer then sparse adam.
 ![Training-times](assets/charts/timings.png)
+
+---
+
+# SGDC — segmented density control
+
+Results for this fork's SGDC components (see `docs/sgdc_spec.md`). Everything here
+runs in *this* checkout with the `dr_aa` rasterizer, so `base_30k` — the same code
+with SGDC off (`--sgdc_enable` omitted) — is the directly comparable baseline.
+(`vanilla_30k` in the manifest is upstream graphdeco on the stock rasterizer and
+is **not** row-comparable; run it separately when the upstream number is needed.)
+
+## Protocol
+
+- Dataset: Replica `office_0/Sequence_1` (COLMAP scene == `DATASET_DIR`;
+  `semantic_class/rgb_<N>.png` GT class labels).
+- Split: `--eval` (llffhold=8) for every run, so rows are comparable.
+- 30 000 iterations, default densification schedule.
+- Metrics via `experiments/metrics.py` → `eval_sgdc.py` (same code path for all
+  rows). **Band** = test PSNR on a 4 px dilation of the class-boundary mask;
+  **Interior** = test PSNR off the band.
+- Runs are seeded in `random`/`numpy` (`safe_state`) but **not** in `torch`, and
+  the rasterizer backwards use atomics → run-to-run variance of roughly
+  **±0.2 dB PSNR and ±2–3% Gaussian count** (quantified below).
+
+## Component B — segment-level error budgeting
+
+Hard per-refine budget of `--sgdc_budget_B * N` slots, allocated across segments
+by *fixable* error `q_i = |grad_i| * mean_residual_i`
+(`--sgdc_budget_enable`; `--sgdc_budget_grad_only` drops the residual term). All
+rows below keep Component A neutral (`--f_b 1.0 --f_int 1.0 --eta 0.0`).
+
+| Run | B | Gaussians | Train PSNR | Test PSNR | SSIM | LPIPS | Band PSNR | Interior PSNR | Train (min) |
+|---|---|---|---|---|---|---|---|---|---|
+| `base_30k`            | —               | 355,256 | 43.50 | 36.50 | 0.9769 | 0.0487 | 31.47 | 39.45 | 16.99 |
+| `sgdc_b_30k_B0.02`    | 0.02            | 100,217 | 39.67 | 35.28 | 0.9631 | 0.1180 | 30.66 | 37.42 |  9.95 |
+| `sgdc_b_30k`          | 0.05            | 267,931 | 42.81 | 36.86 | 0.9761 | 0.0537 | 31.60 | 39.85 | 15.26 |
+| `sgdc_b_30k_B0.05`    | 0.05            | 261,519 | 42.86 | 36.66 | 0.9758 | 0.0539 | 31.41 | 39.66 | 14.43 |
+| `sgdc_b_30k_gradonly` | 0.05 (no error) | 260,867 | 42.87 | 36.91 | 0.9762 | 0.0537 | 31.73 | 39.89 | 14.39 |
+| `sgdc_b_30k_B0.1`     | 0.10            | 310,566 | 43.23 | 36.79 | 0.9765 | 0.0513 | 31.75 | 39.66 | 16.18 |
+| `sgdc_b_30k_B0.15`    | 0.15            | 338,209 | 43.43 | 36.90 | 0.9767 | 0.0497 | 31.68 | 39.91 | 16.98 |
+
+**Observations.**
+
+- B is a clean, monotone capacity knob: Gaussian count tracks `B`
+  (100k → 261k → 310k → 338k), quality rises then saturates.
+- B dominates the baseline on the Pareto front. At `B=0.10` (310k) test PSNR is
+  **36.79 vs base's 36.50 at 355k**; at `B=0.15` (338k) it is **36.90** — i.e.
+  ~+0.3–0.4 dB with **5–13% fewer Gaussians**. At `B=0.15` SSIM/LPIPS are
+  essentially tied with base (0.9767/0.0497 vs 0.9769/0.0487).
+- The **error term does not clearly help**: `grad_only` (36.91, band 31.73) is at
+  least as good as the error-weighted version (36.86, band 31.60). Within the
+  noise floor the mechanism is dominated by **capacity regularization**, not by
+  smarter placement. The residual weighting is an optional refinement.
+- Lower Gaussian count also shortens training time (16.99 → ~14–15 min).
+
+**Variance.** The two identical `B=0.05` runs differ (267,931 vs 261,519
+Gaussians; 36.86 vs 36.66 test PSNR). Treat the base-vs-B gaps as ~1.5–2σ
+pending repeats; the direction is consistent across both `B=0.05` runs and the
+`B=0.10/0.15` points.
+
+## Component A.1 — mask-boundary straddle clone/split
+
+Splits a candidate whose projected mass crosses a semantic boundary
+(`|sd| <= k * sigma_perp`, `--sgdc_signal_enable`). Chained after B: the budget
+picks candidates, the straddle signal picks clone vs split.
+
+| Run | Config | Gaussians | Test PSNR | SSIM | LPIPS | Band PSNR | Interior PSNR |
+|---|---|---|---|---|---|---|---|
+| `sgdc_bsig_30k` | B 0.05 + A.1 (k=1.0) | 247,067 | 36.79 | 0.9757 | 0.0544 | 31.61 | 39.73 |
+
+**Observations.**
+
+- A.1 on top of B compresses further (247k, −30% vs base) but test PSNR slips
+  slightly vs B alone (36.79 vs 36.86 / 36.66) and the **band is flat**
+  (31.61 vs 31.60 / 31.41) — the boundary quality A.1 targets does not move.
+  A single point, so not conclusive; A.1 does not yet earn its keep.
+- **Pending:** `sgdc_sig_30k` (A.1 alone, no budget) to isolate its effect, and a
+  `--sgdc_split_k` sweep (0.5 / 1.0 / 2.0).
+
+## Reproduce
+
+```bash
+python -m experiments.runs --run base_30k
+python -m experiments.runs --run sgdc_b_30k
+python -m experiments.metrics --run-id sgdc_b_30k
+# sweep: run_by_id("sgdc_b_30k", tag=f"B{B}", extra=f"--sgdc_budget_B {B}")
+```
+
