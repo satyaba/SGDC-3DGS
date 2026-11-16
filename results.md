@@ -118,8 +118,11 @@ is **not** row-comparable; run it separately when the upstream number is needed.
   Pareto**: they reach base-or-better PSNR/SSIM/LPIPS at fewer Gaussians
   (B: −5–13% with +0.3–0.4 dB; A.1 alone: −11% with +0.23 dB and tied
   SSIM/LPIPS), and train correspondingly faster.
-- **B's gain is dominated by capacity regularization** — the error-weighted
-  priority is not clearly better than gradient-only budgeting.
+- **B decomposes into cap + allocation.** The hard capacity cap regularizes
+  globally (both global and per-segment beat base on test PSNR); the
+  **per-segment allocation** is what moves the boundary band (global control:
+  band +0.04 vs base; per-segment: +0.28). The error *weighting* itself does
+  nothing (`grad_only` ties the error version).
 - **A.1 alone is competitive and perceptual-metric-safe, but does not
   specifically improve boundary PSNR** despite targeting boundaries; stacking it
   on B is not additive.
@@ -146,6 +149,7 @@ rows below keep Component A neutral (`--f_b 1.0 --f_int 1.0 --eta 0.0`).
 | `sgdc_b_30k_gradonly` | 0.05 (no error) | 260,867 | 42.87 | 36.91 | 0.9762 | 0.0537 | 31.73 | 39.89 | 14.39 |
 | `sgdc_b_30k_B0.1`     | 0.10            | 310,566 | 43.23 | 36.79 | 0.9765 | 0.0513 | 31.75 | 39.66 | 16.18 |
 | `sgdc_b_30k_B0.15`    | 0.15            | 338,209 | 43.43 | 36.90 | 0.9767 | 0.0497 | 31.68 | 39.91 | 16.98 |
+| `sgdc_bglobal_30k`    | 0.10 (global)   | 316,686 | 43.36 | 36.66 | 0.9765 | 0.0504 | 31.51 | 39.68 | 16.05 |
 
 **Observations.**
 
@@ -160,6 +164,25 @@ rows below keep Component A neutral (`--f_b 1.0 --f_int 1.0 --eta 0.0`).
   noise floor the mechanism is dominated by **capacity regularization**, not by
   smarter placement. The residual weighting is an optional refinement.
 - Lower Gaussian count also shortens training time (16.99 → ~14–15 min).
+
+**Segmentation attribution — scene-global control (`--sgdc_budget_global`).** At
+matched `B=0.10`, ranking candidates globally instead of per segment:
+
+| allocation | Gaussians | Test PSNR | Band | Interior | Δglobal vs base | Δband vs base |
+|---|---|---|---|---|---|---|
+| per-segment (`sgdc_b_30k_B0.1`) | 310,566 | 36.79 | **31.75** | 39.66 | **+0.29** | **+0.28** |
+| global (`sgdc_bglobal_30k`)     | 316,686 | 36.66 | 31.51 | 39.68 | +0.16 | +0.04 |
+
+- The **capacity cap alone** regularizes globally: the global control beats base
+  on test PSNR (+0.16) but leaves the **band flat (+0.04)**.
+- The **per-segment allocation** is what moves the band: per-segment is +0.24
+  band and +0.13 test PSNR over the global control at ~2% fewer Gaussians. This
+  is the **only boundary-specific gain** observed across A, A.1, C, and B — and
+  it does *not* collapse interiors the way Component A did.
+- The **error weighting itself does nothing**: `grad_only` (band 31.73) ties the
+  error-weighted version (31.75). Allocation matters; the residual term does not.
+- **Caveat:** +0.24 dB is ~1σ at the ±0.2 dB noise floor and is a single run.
+  Repeats of per-segment vs global at `B=0.10` are needed to make it significant.
 
 **Variance.** The two identical `B=0.05` runs differ (267,931 vs 261,519
 Gaussians; 36.86 vs 36.66 test PSNR). Treat the base-vs-B gaps as ~1.5–2σ
@@ -257,5 +280,6 @@ python -m experiments.runs --run base_30k
 python -m experiments.runs --run sgdc_b_30k
 python -m experiments.metrics --run-id sgdc_b_30k
 # sweep: run_by_id("sgdc_b_30k", tag=f"B{B}", extra=f"--sgdc_budget_B {B}")
+# non-segmented control (same B as sgdc_b_30k_B0.1): --sgdc_budget_global
 ```
 
