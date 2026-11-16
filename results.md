@@ -123,6 +123,10 @@ is **not** row-comparable; run it separately when the upstream number is needed.
 - **A.1 alone is competitive and perceptual-metric-safe, but does not
   specifically improve boundary PSNR** despite targeting boundaries; stacking it
   on B is not additive.
+- **The boundary-semantic components A and C are net-negative** (measured
+  separately on the *train* split, see below): A reallocates toward boundaries
+  (band +0.20) but collapses interiors (−3.13) → net −2.0 global; C is harmful
+  everywhere, including the band it targets.
 - Single scene, and run-to-run seed variance is ±0.2 dB — repeats are needed
   before claiming significance.
 
@@ -193,6 +197,58 @@ picks candidates, the straddle signal picks clone vs split.
   SSIM/LPIPS (0.9769 / 0.0489).
 - **Pending:** a `--sgdc_split_k` sweep (0.5 / 1.0 / 2.0) for A.1, and repeats
   for error bars.
+
+## Components A and C — earlier session (train split)
+
+> **Protocol note.** These were measured in a *separate, earlier* session on the
+> **train split** (`sgdc.eval_boundary`, band = 4 px), **not** the `--eval` test
+> split used in the B / A.1 tables above. They are therefore **not directly
+> comparable** to those rows and are kept separate here. Run ids map to the
+> manifest (`sgdc_a_*`, `sgdc_c_*`).
+
+### A — boundary-aware density control
+
+**Round 1** — 30k, train-view PSNR, A sweep:
+
+| Run | Config | Train PSNR | Gaussians |
+|---|---|---|---|
+| `base_30k` (SGDC off) | — | 41.745 | 530,009 |
+| `sgdc_a_30k` | `f_b 0.5, f_int 2.0, dt_norm 100` | 42.273 | 866,915 |
+| `sgdc_a_fb1_fi3_dt60_30k` | `f_b 1.0, f_int 3.0, dt_norm 60` | 40.279 | 316,518 |
+| `sgdc_a_fb05_fi4_dt50_30k` | `f_b 0.5, f_int 4.0, dt_norm 50` | 40.217 | 522,161 |
+| `sgdc_a_fb1_fi6_dt40_30k` | `f_b 1.0, f_int 6.0, dt_norm 40` | 37.835 | 201,792 |
+
+The only config that beat base (`sgdc_a`) did so by adding **+63% Gaussians**. At
+matched count (`a_fb05_fi4_dt50`, 522k vs base 530k) it is **−1.5 dB**.
+
+**Round 2** — boundary-restricted eval, train split, band 4 px (A and C together):
+
+| Run | Gaussians | Global | Band | Interior |
+|---|---|---|---|---|
+| `base_30k` | 534.0k | 43.70 | 38.92 | 45.64 |
+| `sgdc_a_fb05_fi4_dt50_30k` | 522.2k | 41.68 | **39.11** | 42.50 |
+| `sgdc_c_bnd02_30k` | 498.1k | 42.89 | 37.92 | 44.93 |
+| `sgdc_c_bnd10_30k` | 414.3k | 41.94 | 36.54 | 44.29 |
+| `sgdc_c_bnd50_30k` | 349.1k | 40.32 | 34.53 | 42.99 |
+
+Deltas vs base:
+
+| Run | Δ global | Δ band | Δ interior |
+|---|---|---|---|
+| `sgdc_a_fb05_fi4_dt50_30k` | −2.02 | **+0.20** | −3.13 |
+| `sgdc_c_bnd02_30k` | −0.81 | −1.00 | −0.71 |
+| `sgdc_c_bnd10_30k` | −1.76 | −2.38 | −1.35 |
+| `sgdc_c_bnd50_30k` | −3.38 | −4.39 | −2.65 |
+
+**Outcome.**
+
+- **A reallocates exactly as designed** — band +0.20 at *fewer* points — but
+  interiors collapse (−3.13), so global is net **−2.02**. Correct mechanism,
+  wrong trade-off.
+- **C is harmful everywhere**, including the band it targets (−1.00 … −4.39 at
+  increasing λ).
+- Both are candidates for re-measurement on the `--eval` test split so all six
+  rows become directly comparable.
 
 ## Reproduce
 
