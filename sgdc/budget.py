@@ -136,3 +136,24 @@ def budget_mask(q, seg, candidate_mask, delta_total: int, n_seg: int, topup: boo
             keep = keep.clone()
             keep[pool_idx[torch.topk(q[pool_idx], take).indices]] = True
     return keep, delta_n
+
+
+def global_mask(q, candidate_mask, delta_total: int):
+    """Scene-global budget: keep the top-``delta_total`` candidates by ``q``.
+
+    This is the *non-segmented* control for Component B. It applies the same
+    priority ``q`` and the same hard cap, but ranks every candidate together
+    instead of allocating per segment. Comparing it against
+    :func:`budget_mask` isolates how much of B's effect comes from the
+    segmentation/allocation rather than a plain capacity cap.
+    """
+    q = q.reshape(-1)
+    candidate_mask = candidate_mask.reshape(-1)
+    keep = torch.zeros_like(candidate_mask)
+    if delta_total <= 0 or not bool(candidate_mask.any()):
+        return keep
+    pool = torch.nonzero(candidate_mask, as_tuple=False).squeeze(-1)
+    take = min(int(delta_total), int(pool.numel()))
+    keep[pool[torch.topk(q[pool], take).indices]] = True
+    return keep
+

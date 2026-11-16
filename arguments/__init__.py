@@ -111,6 +111,7 @@ class OptimizationParams(ParamGroup):
         self.sgdc_budget_enable = False  # hard per-refine budget allocated by fixable error
         self.sgdc_budget_B = 0.05        # budget as fraction of current N per refine step
         self.sgdc_budget_grad_only = False  # priority q = |grad| only (drop the residual term)
+        self.sgdc_budget_global = False  # non-segmented control: budget top-k scene-globally
         # Reading A.1: mask-boundary straddle drives clone vs split
         self.sgdc_signal_enable = False  # split Gaussians whose footprint straddles a boundary
         self.sgdc_split_k = 1.0          # straddle if |sd| <= k * sigma_perp

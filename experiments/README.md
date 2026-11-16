@@ -57,6 +57,7 @@ Runs:
 | `sgdc_c_bnd10_30k` | `sgdc` | 30000 | Component C: `lambda_bnd 0.10` (A neutral) |
 | `sgdc_c_bnd50_30k` | `sgdc` | 30000 | Component C: `lambda_bnd 0.50` (A neutral) |
 | `sgdc_b_30k` | `sgdc` | 30000 | Component B: error budget `B 0.05` (A neutral) |
+| `sgdc_bglobal_30k` | `sgdc` | 30000 | B control: scene-global budget `B 0.10` (no segments) |
 | `sgdc_bsig_30k` | `sgdc` | 30000 | B + A.1: error budget + straddle clone/split |
 | `sgdc_sig_30k` | `sgdc` | 30000 | A.1 only: straddle clone/split (no budget) |
 | `vanilla_sanity` | `vanilla_3dgs` | 3000 | SANITY smoke test |
@@ -72,7 +73,8 @@ threshold per Gaussian by its distance to a semantic boundary
 split-threshold shrink). **Component B** (segment-level error budgeting) caps
 additions per refine step at `--sgdc_budget_B * N` and allocates those slots
 across segments by *fixable error* (`|grad| * residual`, `--sgdc_budget_enable`;
-`--sgdc_budget_grad_only` drops the residual). **Component A.1** (mask-boundary
+`--sgdc_budget_grad_only` drops the residual; `--sgdc_budget_global` applies the
+same cap scene-globally as the non-segmented control). **Component A.1** (mask-boundary
 straddle) splits a Gaussian whose projected mass crosses a semantic boundary
 (`--sgdc_signal_enable` / `--sgdc_split_k`). **Component C** (cross-boundary
 scale regularizer) adds an `erfc`-footprint scale loss on boundary Gaussians

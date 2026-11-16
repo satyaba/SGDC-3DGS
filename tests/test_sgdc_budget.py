@@ -110,6 +110,21 @@ def test_budget_mask_all_spendable_goes_to_high_priority_segment():
     assert bool(keep[0]) and bool(keep[1]) and not bool(keep[2]) and not bool(keep[3])
 
 
+def test_global_mask_is_a_cap_independent_of_segments():
+    if _skip_if_no_torch():
+        return
+    q = torch.tensor([0.1, 5.0, 0.2, 4.0, 3.0])
+    cand = torch.ones(5, dtype=torch.bool)
+    keep = sgb.global_mask(q, cand, delta_total=2)
+    assert int(keep.sum()) == 2
+    assert bool(keep[1]) and bool(keep[3])            # two highest q, across all
+    assert not bool(keep[0]) and not bool(keep[2]) and not bool(keep[4])
+    # respects the candidate mask and is bounded by available candidates
+    keep2 = sgb.global_mask(q, torch.tensor([True, False, False, False, False]), 3)
+    assert int(keep2.sum()) == 1
+    assert int(sgb.global_mask(q, cand, 0).sum()) == 0
+
+
 if __name__ == "__main__":
     import traceback
 

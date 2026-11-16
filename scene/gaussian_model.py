@@ -201,6 +201,7 @@ class GaussianModel:
         self.sgdc_budget_enable = getattr(training_args, "sgdc_budget_enable", False)
         self.sgdc_budget_B = getattr(training_args, "sgdc_budget_B", 0.05)
         self.sgdc_budget_grad_only = getattr(training_args, "sgdc_budget_grad_only", False)
+        self.sgdc_budget_global = getattr(training_args, "sgdc_budget_global", False)
         # Reading A: mask-boundary straddle drives clone vs split
         self.sgdc_signal_enable = getattr(training_args, "sgdc_signal_enable", False)
         self.sgdc_split_k = getattr(training_args, "sgdc_split_k", 1.0)
@@ -568,18 +569,23 @@ class GaussianModel:
         # budget keeps the top candidates per segment and never exceeds B*N slots.
         if self.sgdc_enable and self.sgdc_budget_enable and bool(cand.any()):
             from sgdc import budget as sgb
-            n_seg = int(self.seg_top1.max().item()) if self.seg_top1.numel() else 0
             delta_total = int(self.sgdc_budget_B * self.get_xyz.shape[0])
-            if n_seg > 0 and delta_total > 0:
+            if delta_total > 0:
                 q = sgb.per_gaussian_priority(grads, self.seg_err_sum, self.seg_norm_sum,
                                               use_error=not self.sgdc_budget_grad_only)
-                keep, delta_n = sgb.budget_mask(q, self.seg_top1, cand, delta_total, n_seg)
-                cand = keep
+                n_seg = int(self.seg_top1.max().item()) if self.seg_top1.numel() else 0
+                mode = "global" if self.sgdc_budget_global else "segment"
+                if self.sgdc_budget_global:
+                    # Non-segmented control: rank every candidate together.
+                    cand = sgb.global_mask(q, cand, delta_total)
+                elif n_seg > 0:
+                    keep, _delta_n = sgb.budget_mask(q, self.seg_top1, cand, delta_total, n_seg)
+                    cand = keep
                 if getattr(self, "_sgdc_b_dbg", 0) < 6:
                     self._sgdc_b_dbg = getattr(self, "_sgdc_b_dbg", 0) + 1
-                    print(f"[SGDC-B] n={self.get_xyz.shape[0]} B={self.sgdc_budget_B} "
-                          f"target={delta_total} kept={int(cand.sum())} segs={n_seg} "
-                          f"max_share={int(delta_n.max())} "
+                    print(f"[SGDC-B] mode={mode} n={self.get_xyz.shape[0]} "
+                          f"B={self.sgdc_budget_B} target={delta_total} "
+                          f"kept={int(cand.sum())} segs={n_seg} "
                           f"err_mean={float((self.seg_err_sum / self.seg_norm_sum.clamp_min(1)).mean()):.4f}")
 
         # --- Reading A.1: mask-boundary straddle decides clone vs split ---

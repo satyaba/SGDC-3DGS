@@ -314,6 +314,13 @@ mask is applied in `densify_and_prune` *before* clone/split run; `seg_err_sum` i
 accumulated in `add_semantic_stats` from the current view's `|render − GT|` map.
 CLI: `--sgdc_budget_enable`, `--sgdc_budget_B`, `--sgdc_budget_grad_only`.
 
+**Non-segmented control — `--sgdc_budget_global`.** Applies the *same* priority
+`q_i` and the *same* hard cap, but keeps the top-``B·N`` candidates scene-globally
+(`sgdc.budget.global_mask`) instead of allocating per segment. Comparing it to the
+per-segment path isolates how much of B comes from the segmentation/allocation
+versus a plain capacity cap — the control the segmentation-attribution claim
+needs.
+
 ### Component C — Cross-boundary scale regularizer
 
 **Mechanism.** For a projection with boundary normal $n$, $\sigma_\perp=\sqrt{n^\top\Sigma'_{iv}n}$, signed boundary distance $z=\mathrm{sd}/\sigma_\perp$:
@@ -414,6 +421,7 @@ self.sgdc_dt_norm       = 100.0   # A: px normalizer for boundary distance d_i
 self.sgdc_budget_enable = False   # B: hard per-refine error budget
 self.sgdc_budget_B      = 0.05    # B: budget / refine step (frac of N)
 self.sgdc_budget_grad_only=False # B: drop residual (q = |grad| only)
+self.sgdc_budget_global =False   # B: scene-global top-k control (no per-segment split)
 self.sgdc_signal_enable = False   # A.1: straddle-driven clone/split
 self.sgdc_split_k       = 1.0     # A.1: straddle if |sd| <= k * sigma_perp
 self.sgdc_signal_band   = 32.0    # A.1: boundary band (px)

@@ -27,6 +27,8 @@ Components represented here (see ``docs/sgdc_spec.md``):
 * **B** -- segment-level error budgeting: a hard per-refine budget of
   ``--sgdc_budget_B * N`` slots allocated across segments by *fixable error*
   (``|grad| * residual``), top-k within each segment (``--sgdc_budget_enable``).
+  ``--sgdc_budget_global`` applies the same cap scene-globally (the
+  non-segmented control); ``--sgdc_budget_grad_only`` drops the residual term.
 * **A.1** -- mask-boundary straddle clone/split: a Gaussian whose projected mass
   crosses a boundary (``|sd| <= k * sigma_perp``) is split rather than cloned
   (``--sgdc_signal_enable`` / ``--sgdc_split_k``).
@@ -172,6 +174,15 @@ RUNS: Dict[str, RunSpec] = {
                    "--sgdc_signal_enable", "--sgdc_split_k", "1.0"),
             notes="A.1 only: mask-boundary straddle drives clone/split (no budget).",
         ),
+        RunSpec(
+            run_id="sgdc_bglobal_30k",
+            method="sgdc",
+            iterations=30_000,
+            extra=("--sgdc_enable", "--f_b", "1.0", "--f_int", "1.0", "--eta", "0.0",
+                   "--sgdc_budget_enable", "--sgdc_budget_B", "0.10",
+                   "--sgdc_budget_global"),
+            notes="B control: scene-global budget (no per-segment split), B 0.10.",
+        ),
         # --- sanity runs: same configs, 3_000 iters. Enough to cross the first
         # densification (500), hit the opacity reset (3000) and save. Use to
         # verify the whole pipeline (train -> rasterizer swap -> eval). ---
@@ -224,6 +235,16 @@ RUNS: Dict[str, RunSpec] = {
                    "--sgdc_signal_enable", "--sgdc_split_k", "1.0"),
             sanity=True,
             notes="SANITY: Component B + A.1 (straddle clone/split) @3k.",
+        ),
+        RunSpec(
+            run_id="sgdc_bglobal_sanity",
+            method="sgdc",
+            iterations=3_000,
+            extra=("--sgdc_enable", "--f_b", "1.0", "--f_int", "1.0", "--eta", "0.0",
+                   "--sgdc_budget_enable", "--sgdc_budget_B", "0.10",
+                   "--sgdc_budget_global"),
+            sanity=True,
+            notes="SANITY: Component B global-budget control @3k.",
         ),
     )
 }
