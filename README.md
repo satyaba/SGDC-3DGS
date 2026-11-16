@@ -8,6 +8,7 @@ the scene, and (b) regularise the scale of boundary Gaussians. The goal is
 better reconstruction quality on boundaries at a comparable Gaussian budget.
 
 - Method & math spec: [`docs/sgdc_spec.md`](docs/sgdc_spec.md)
+- Experiment findings report: [`docs/sgdc_report.md`](docs/sgdc_report.md)
 - Experiment harness (baselines, sweeps, metrics): [`experiments/README.md`](experiments/README.md)
 - Colab driver: [`Run_Experiments.ipynb`](Run_Experiments.ipynb)
 
