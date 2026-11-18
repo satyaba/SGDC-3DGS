@@ -110,6 +110,54 @@ def test_budget_mask_all_spendable_goes_to_high_priority_segment():
     assert bool(keep[0]) and bool(keep[1]) and not bool(keep[2]) and not bool(keep[3])
 
 
+def test_segment_priority_gamma_extremes():
+    if _skip_if_no_torch():
+        return
+    q = torch.tensor([1.0, 1.0, 1.0, 4.0])
+    seg = torch.tensor([1, 1, 1, 2])
+    # gamma=0 -> raw sum
+    p0 = sgb.segment_priority(q, seg, 2, gamma=0.0)
+    assert abs(float(p0[1]) - 3.0) < 1e-6
+    assert abs(float(p0[2]) - 4.0) < 1e-6
+    # gamma=1 -> per-capita mean
+    p1 = sgb.segment_priority(q, seg, 2, gamma=1.0)
+    assert abs(float(p1[1]) - 1.0) < 1e-6
+    assert abs(float(p1[2]) - 4.0) < 1e-6
+    # default gamma=0.5 still capacity-normalized
+    p5 = sgb.segment_priority(q, seg, 2)
+    assert abs(float(p5[1]) - 3.0 / (3 ** 0.5)) < 1e-6
+
+
+def test_budget_mask_floor_equalizes_shares():
+    if _skip_if_no_torch():
+        return
+    n = 4000
+    q = torch.ones(n)
+    seg = torch.cat([torch.ones(3000, dtype=torch.long),
+                     2 * torch.ones(1000, dtype=torch.long)])
+    cand = torch.ones(n, dtype=torch.bool)
+    _, dn0 = sgb.budget_mask(q, seg, cand, 400, n_seg=2, topup=False, floor=0.0)
+    _, dn1 = sgb.budget_mask(q, seg, cand, 400, n_seg=2, topup=False, floor=1.0)
+    # floor=0: proportional -> the larger class gets more
+    assert int(dn0[1]) > int(dn0[2])
+    # floor=1: equal slices (rounding aside) summing exactly to the budget
+    assert abs(int(dn1[1]) - int(dn1[2])) <= 1
+    assert int(dn1[1]) + int(dn1[2]) == 400
+
+
+def test_budget_mask_floor_zero_matches_default():
+    if _skip_if_no_torch():
+        return
+    torch.manual_seed(0)
+    n = 500
+    q = torch.rand(n)
+    seg = torch.randint(1, 5, (n,))
+    cand = torch.rand(n) < 0.3
+    a, _ = sgb.budget_mask(q, seg, cand, 50, n_seg=4)
+    b, _ = sgb.budget_mask(q, seg, cand, 50, n_seg=4, floor=0.0, gamma=0.5)
+    assert bool((a == b).all())
+
+
 def test_global_mask_is_a_cap_independent_of_segments():
     if _skip_if_no_torch():
         return

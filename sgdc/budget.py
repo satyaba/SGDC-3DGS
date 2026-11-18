@@ -7,8 +7,13 @@ boundary-modulated) gradient threshold is exhausted, a refine step is given a
 in proportion to each segment's *fixable error*:
 
     q_i = |g_i| * mean_residual_i                  (per-Gaussian, error x gradient)
-    p_c = sum_{i in c} q_i / sqrt(n_c)              (per-segment, capacity-normalized)
+    p_c = sum_{i in c} q_i / n_c^gamma              (per-segment; gamma = size discount)
     dN_c = B * p_c / sum_c' p_c'                    (integer shares)
+
+``gamma`` (``--sgdc_budget_gamma``) tunes the size discount: 0 = raw sum,
+0.5 = capacity-normalized (default), 1 = per-capita mean. ``floor``
+(``--sgdc_budget_alloc_floor``) blends each share toward an equal slice per
+class so low-priority classes are not starved.
 
 ``q_i`` folds the view-space positional gradient ``g_i`` (a *benefit* proxy) into
 the photometric residual ``e_i`` (a *need* proxy). Pure residual would spend the
@@ -42,11 +47,14 @@ def per_gaussian_priority(grads, err_sum, norm_sum, use_error: bool = True):
     return g * e
 
 
-def segment_priority(q, seg, n_seg: int):
+def segment_priority(q, seg, n_seg: int, gamma: float = 0.5):
     """``p_c`` for segment ids ``0..n_seg`` (0 == unlabeled/unseen).
 
-    ``p_c = sum_{i in c} q_i / sqrt(n_c)`` where ``n_c`` is the number of
-    Gaussians currently assigned to ``c``. Returns ``[n_seg + 1]``.
+    ``p_c = sum_{i in c} q_i / n_c**gamma`` where ``n_c`` is the number of
+    Gaussians currently assigned to ``c``. ``gamma`` is the size-discount
+    exponent: ``0`` = raw sum (large segments win), ``0.5`` = capacity-normalized
+    (default), ``1`` = per-capita mean (small, high-value segments win).
+    Returns ``[n_seg + 1]``.
     """
     size = int(n_seg) + 1
     q = q.reshape(-1)
@@ -54,7 +62,8 @@ def segment_priority(q, seg, n_seg: int):
     num = torch.zeros(size, device=q.device, dtype=q.dtype).index_add_(0, seg, q)
     cnt = torch.zeros(size, device=q.device, dtype=q.dtype).index_add_(
         0, seg, torch.ones_like(q))
-    return num / cnt.clamp_min(1.0).sqrt()
+    denom = cnt.clamp_min(1.0).pow(float(gamma))
+    return num / denom
 
 
 def allocate(delta_total: int, p):
@@ -106,7 +115,8 @@ def topk_mask(q, seg, delta_n, candidate_mask, n_seg: int):
     return keep
 
 
-def budget_mask(q, seg, candidate_mask, delta_total: int, n_seg: int, topup: bool = True):
+def budget_mask(q, seg, candidate_mask, delta_total: int, n_seg: int, topup: bool = True,
+                floor: float = 0.0, gamma: float = 0.5):
     """Full Component-B selection: allocate ``delta_total`` slots and pick candidates.
 
     ``q``           [N]   per-Gaussian priority (error x gradient)
@@ -114,6 +124,10 @@ def budget_mask(q, seg, candidate_mask, delta_total: int, n_seg: int, topup: boo
     ``candidate_mask`` [N] bool, the pre-budget gradient candidates
     ``delta_total`` int   hard budget of new slots for this refine step
     ``n_seg``       int   number of real segments (max id; 0 is unlabeled)
+    ``floor``       float in [0,1]; reserve this fraction of the budget as an
+                    equal slice per class and allocate the rest by priority
+                    (0 = pure priority, 1 = equal per class)
+    ``gamma``       float; size-discount exponent passed to :func:`segment_priority`
 
     Returns ``(keep, delta_n)``.
     """
@@ -122,8 +136,18 @@ def budget_mask(q, seg, candidate_mask, delta_total: int, n_seg: int, topup: boo
         return torch.zeros_like(candidate_mask), torch.zeros(int(n_seg) + 1,
                                                               dtype=torch.long,
                                                               device=q.device)
-    p = segment_priority(q, seg, n_seg).clone()
+    p = segment_priority(q, seg, n_seg, gamma=gamma).clone()
     p[0] = 0.0  # never budget the unlabeled pool
+    if floor > 0.0 and n_seg > 0:
+        # Blend the per-class weights toward an equal slice:
+        #   w_c = floor / n_seg + (1 - floor) * p_c / sum(p).
+        real = p[1:]
+        s = real.sum()
+        if s > 0:
+            r = real / s
+            p[1:] = float(floor) / n_seg + (1.0 - float(floor)) * r
+        else:
+            p[1:] = 1.0 / n_seg
     delta_n = allocate(delta_total, p)
     keep = topk_mask(q, seg, delta_n, candidate_mask, n_seg)
 

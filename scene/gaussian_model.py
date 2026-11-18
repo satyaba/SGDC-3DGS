@@ -202,6 +202,8 @@ class GaussianModel:
         self.sgdc_budget_B = getattr(training_args, "sgdc_budget_B", 0.05)
         self.sgdc_budget_grad_only = getattr(training_args, "sgdc_budget_grad_only", False)
         self.sgdc_budget_global = getattr(training_args, "sgdc_budget_global", False)
+        self.sgdc_budget_alloc_floor = getattr(training_args, "sgdc_budget_alloc_floor", 0.0)
+        self.sgdc_budget_gamma = getattr(training_args, "sgdc_budget_gamma", 0.5)
         self.sgdc_budget_debug = getattr(training_args, "sgdc_budget_debug", False)
         # Reading A: mask-boundary straddle drives clone vs split
         self.sgdc_signal_enable = getattr(training_args, "sgdc_signal_enable", False)
@@ -581,16 +583,21 @@ class GaussianModel:
                     # Non-segmented control: rank every candidate together.
                     cand = sgb.global_mask(q, cand, delta_total)
                 elif n_seg > 0:
-                    keep, _delta_n = sgb.budget_mask(q, self.seg_top1, cand, delta_total, n_seg)
+                    keep, _delta_n = sgb.budget_mask(q, self.seg_top1, cand, delta_total, n_seg,
+                                                     floor=self.sgdc_budget_alloc_floor,
+                                                     gamma=self.sgdc_budget_gamma)
                     cand = keep
                 if self.sgdc_budget_debug:
                     from sgdc import budget_probe as sbp
                     sbp.record(q, grads, self.seg_top1, cand_pre, cand,
-                               delta_total, n_seg, mode, iteration)
+                               delta_total, n_seg, mode, iteration,
+                               floor=self.sgdc_budget_alloc_floor,
+                               gamma=self.sgdc_budget_gamma)
                 if getattr(self, "_sgdc_b_dbg", 0) < 6:
                     self._sgdc_b_dbg = getattr(self, "_sgdc_b_dbg", 0) + 1
                     print(f"[SGDC-B] mode={mode} n={self.get_xyz.shape[0]} "
                           f"B={self.sgdc_budget_B} target={delta_total} "
+                          f"floor={self.sgdc_budget_alloc_floor} gamma={self.sgdc_budget_gamma} "
                           f"kept={int(cand.sum())} segs={n_seg} "
                           f"err_mean={float((self.seg_err_sum / self.seg_norm_sum.clamp_min(1)).mean()):.4f}")
 

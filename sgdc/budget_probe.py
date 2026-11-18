@@ -55,7 +55,8 @@ def _iou(a: torch.Tensor, b: torch.Tensor) -> float:
     return int((a & b).sum()) / max(int((a | b).sum()), 1)
 
 
-def record(q, grads, seg, cand_pre, selected, delta_total, n_seg, mode, iteration=None):
+def record(q, grads, seg, cand_pre, selected, delta_total, n_seg, mode, iteration=None,
+           floor: float = 0.0, gamma: float = 0.5):
     """Compute and append one probe record. All tensors are ``[N]`` / ``[N,1]``."""
     q = q.reshape(-1).detach()
     g = grads.reshape(-1).abs().detach()
@@ -65,7 +66,8 @@ def record(q, grads, seg, cand_pre, selected, delta_total, n_seg, mode, iteratio
 
     keep_glob = sgb.global_mask(q, cand_pre, delta_total)
     keep_gq0 = sgb.global_mask(g, cand_pre, delta_total)
-    keep_seg = (sgb.budget_mask(q, seg, cand_pre, delta_total, n_seg)[0]
+    keep_seg = (sgb.budget_mask(q, seg, cand_pre, delta_total, n_seg,
+                                floor=floor, gamma=gamma)[0]
                 if n_seg > 0 else keep_glob)
 
     n_cand = int(cand_pre.sum())
@@ -79,7 +81,13 @@ def record(q, grads, seg, cand_pre, selected, delta_total, n_seg, mode, iteratio
     else:
         class_cv = 0.0
 
-    p = sgb.segment_priority(q, seg, n_seg)
+    p = sgb.segment_priority(q, seg, n_seg, gamma=gamma)
+    p[0] = 0.0
+    if floor > 0.0 and n_seg > 0:
+        real = p[1:]
+        s = real.sum()
+        p[1:] = (float(floor) / n_seg + (1.0 - float(floor)) * (real / s)
+                 if s > 0 else 1.0 / n_seg)
     alloc = sgb.allocate(delta_total, p)
     share_max = float((p[1:].max() / p[1:].sum()).item()) if n_seg > 0 and p[1:].sum() > 0 else 0.0
 
@@ -93,6 +101,8 @@ def record(q, grads, seg, cand_pre, selected, delta_total, n_seg, mode, iteratio
         n_cand=n_cand,
         binding=int(n_cand > delta_total),
         mode=mode,
+        floor=float(floor),
+        gamma=float(gamma),
         iou_sg=_iou(keep_seg, keep_glob),
         iou_gq0=_iou(keep_glob, keep_gq0),
         iou_sel=_iou(selected, keep_glob),
@@ -126,7 +136,10 @@ def summarize(path=None):
 
     binding = [r for r in recs if r["binding"]]
     slack = [r for r in recs if not r["binding"]]
+    fl = mean(recs, "floor")
+    gm = mean(recs, "gamma")
     print(f"\n=== Component-B runtime probe: {path}  ({n} refine steps) ===")
+    print(f"allocation floor / gamma          : {fl:.2f} / {gm:.2f}")
     print(f"binding fraction (n_cand > delta) : {len(binding)}/{n} "
           f"= {len(binding) / n:.2f}   (else the cap is an exact no-op)")
 

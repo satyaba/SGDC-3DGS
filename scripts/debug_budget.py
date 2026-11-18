@@ -145,6 +145,36 @@ def rank_collapse_report():
         print(f"{w:>13.2f} {_spearman(q[cand], g[cand]):>13.3f} {_iou(kg, kg0):>10.3f}")
 
 
+def allocation_sweep():
+    """Options 1/2: how floor and gamma move IoU(per-segment, global)."""
+    g = torch.rand(N) ** 3 * 1e-3 + 1e-5
+    cand = g >= torch.quantile(g, 0.85)
+    seg = _classes(N, [int(N * 0.7), int(N * 0.2), int(N * 0.1)])
+    q = g * ((g / g.max()) + 0.02 * torch.rand(N))
+    delta = int(0.10 * N)
+    kg = sgb.global_mask(q, cand, delta)
+
+    def share_max(floor, gamma):
+        p = sgb.segment_priority(q, seg, 3, gamma=gamma).clone()
+        p[0] = 0.0
+        if floor > 0:
+            r = p[1:] / p[1:].sum()
+            p[1:] = floor / 3 + (1 - floor) * r
+        return float((p[1:].max() / p[1:].sum()).item())
+
+    print("\n== Option 1: IoU(per-segment, global) vs floor (gamma=0.5) ==")
+    print(f"{'floor':>6} {'IoU':>6} {'maxshare':>9}")
+    for f in (0.0, 0.25, 0.5, 0.75, 1.0):
+        ks, _ = sgb.budget_mask(q, seg, cand, delta, 3, floor=f)
+        print(f"{f:>6.2f} {_iou(ks, kg):>6.3f} {share_max(f, 0.5):>9.3f}")
+
+    print("\n== Option 2: IoU(per-segment, global) vs gamma (floor=0) ==")
+    print(f"{'gamma':>6} {'IoU':>6} {'maxshare':>9}")
+    for gm in (0.0, 0.5, 1.0):
+        ks, _ = sgb.budget_mask(q, seg, cand, delta, 3, gamma=gm)
+        print(f"{gm:>6.2f} {_iou(ks, kg):>6.3f} {share_max(0.0, gm):>9.3f}")
+
+
 if __name__ == "__main__":
     g = torch.rand(N) ** 3 * 1e-3 + 1e-5
     tau = torch.quantile(g, 0.85)
@@ -157,6 +187,7 @@ if __name__ == "__main__":
     check_T1_exact()
     check_T4_normalization()
     rank_collapse_report()
+    allocation_sweep()
 
     res_rank = (g / g.max()) + 0.02 * torch.rand(N)      # rank-preserving residual
     eq = _classes(N, [N // 3] * 3)
