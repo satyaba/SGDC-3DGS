@@ -298,7 +298,14 @@ if __name__ == "__main__":
     parser.add_argument("--start_checkpoint", type=str, default = None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
-    
+
+    # Component-B probe: write next to the model unless a path is given, so a
+    # sweep of runs does not share one log file.
+    if getattr(args, "sgdc_budget_debug", False) and args.model_path \
+            and not os.environ.get("SGDC_BUDGET_DEBUG_PATH"):
+        os.environ["SGDC_BUDGET_DEBUG_PATH"] = os.path.join(
+            args.model_path, "sgdc_budget_probe.jsonl")
+
     print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)

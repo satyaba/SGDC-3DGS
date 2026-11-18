@@ -355,6 +355,53 @@ def run_sanity(**kw) -> None:
 # --------------------------------------------------------------------------- #
 # CLI                                                                          #
 # --------------------------------------------------------------------------- #
+# --------------------------------------------------------------------------- #
+# COMPONENT-B ALLOCATION SWEEP                                                  #
+# --------------------------------------------------------------------------- #
+# Component B tied the scene-global control because the hard cap binds in only
+# ~16% of refine steps and, when it does, IoU(per-segment, global) ~ 0.76. This
+# sweep attacks both causes:
+#
+#   * a loose UNIFORM gradient gate (f_b == f_int == 0.5) scales tau uniformly,
+#     so the hard budget becomes the binding rate limiter nearly every step
+#     (Component A stays boundary-neutral);
+#   * --sgdc_budget_alloc_floor and --sgdc_budget_gamma push the per-segment
+#     quotas away from the global top-k.
+#
+# Every arm keeps Component B at B = 0.10 and logs the runtime probe. The probe
+# file defaults to <model_dir>/sgdc_budget_probe.jsonl (see train.py), so runs do
+# not share one log.
+_B_SWEEP_BASE = (
+    "--sgdc_enable", "--f_b", "0.5", "--f_int", "0.5", "--eta", "0.0",
+    "--sgdc_budget_enable", "--sgdc_budget_B", "0.10", "--sgdc_budget_debug",
+)
+_B_SWEEP_ARMS = (
+    ("seg", (), "segment, priority allocation (floor 0, gamma 0.5)"),
+    ("glob", ("--sgdc_budget_global",), "global control, same cap and gate"),
+    ("f05", ("--sgdc_budget_alloc_floor", "0.5"), "segment, half equal slice"),
+    ("f1", ("--sgdc_budget_alloc_floor", "1.0"), "segment, equal quota per class"),
+    ("g0", ("--sgdc_budget_gamma", "0.0"), "segment, raw-sum size discount"),
+    ("g1", ("--sgdc_budget_gamma", "1.0"), "segment, per-capita discount"),
+    ("f1g1", ("--sgdc_budget_alloc_floor", "1.0", "--sgdc_budget_gamma", "1.0"),
+     "segment, maximally class-driven"),
+)
+
+
+def _b_sweep_specs(sanity: bool = False) -> List[RunSpec]:
+    iters = 3_000 if sanity else 30_000
+    suffix = "_sanity" if sanity else "_30k"
+    return [
+        RunSpec(run_id=f"sgdc_bsw_{arm}{suffix}", method="sgdc", iterations=iters,
+                extra=_B_SWEEP_BASE + args, sanity=sanity,
+                notes=f"B sweep (loose gate): {note}.")
+        for arm, args, note in _B_SWEEP_ARMS
+    ]
+
+
+for _spec in _b_sweep_specs(False) + _b_sweep_specs(True):
+    RUNS[_spec.run_id] = _spec
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     p = argparse.ArgumentParser(description="Run the experiment manifest.")
     g = p.add_mutually_exclusive_group(required=True)
