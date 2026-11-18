@@ -119,23 +119,43 @@ def summarize(path=None):
     n = len(recs)
     import statistics as st
 
-    def mean(key):
-        vals = [r[key] for r in recs if isinstance(r.get(key), (int, float))
+    def mean(rows, key):
+        vals = [r[key] for r in rows if isinstance(r.get(key), (int, float))
                 and r[key] == r[key]]
         return st.fmean(vals) if vals else float("nan")
 
-    bind = sum(r["binding"] for r in recs)
+    binding = [r for r in recs if r["binding"]]
+    slack = [r for r in recs if not r["binding"]]
     print(f"\n=== Component-B runtime probe: {path}  ({n} refine steps) ===")
-    print(f"binding fraction (n_cand > delta) : {bind}/{n} = {bind / n:.2f}")
-    print(f"mean IoU(per-segment, global)     : {mean('iou_sg'):.3f}")
-    print(f"mean IoU(global, grad-only)       : {mean('iou_gq0'):.3f}")
-    print(f"mean Spearman(q, |grad|)          : {mean('spear'):.3f}")
-    print(f"mean unlabeled candidate fraction : {mean('unlab'):.3f}")
-    print(f"mean top-up slots / delta         : {mean('topup') / max(mean('delta'), 1):.3f}")
-    print(f"mean class-size CV                : {mean('class_cv'):.3f}")
-    print(f"mean max single-class share       : {mean('share_max'):.3f}")
-    print("\nReading: IoU(per-segment, global) near 1 + high binding + Spearman")
-    print("near 1 => the arms pick the same points and the residual is inert.")
+    print(f"binding fraction (n_cand > delta) : {len(binding)}/{n} "
+          f"= {len(binding) / n:.2f}   (else the cap is an exact no-op)")
+
+    def line(label, key):
+        print(f"  {label:<34} all={mean(recs, key):.3f} | "
+              f"binding={mean(binding, key):.3f} | slack={mean(slack, key):.3f}")
+
+    line("IoU(per-segment, global)", "iou_sg")
+    line("IoU(global, grad-only)", "iou_gq0")
+    line("Spearman(q, |grad|)", "spear")
+    line("unlabeled candidate fraction", "unlab")
+    line("max single-class share", "share_max")
+    line("class-size CV", "class_cv")
+    topup = mean(recs, "topup") / max(mean(recs, "delta"), 1)
+    print(f"  {'top-up slots / delta':<34} {topup:.3f}")
+
+    # Adaptive read-out: the binding fraction is the dominant knob.
+    frac = len(binding) / n
+    iou_s = mean(recs, "iou_sg")
+    print("\nReading:")
+    if frac < 0.25:
+        print(f"  The cap binds in only {frac:.0%} of steps, so per-segment and global")
+        print("  are byte-identical the other " + f"{(1 - frac):.0%}" + " -> arms must tie.")
+    elif iou_s > 0.9:
+        print(f"  Cap binds often ({frac:.0%}) but IoU(per-segment, global)={iou_s:.2f}")
+        print("  is high -> the two allocations pick nearly the same points.")
+    else:
+        print(f"  Cap binds often ({frac:.0%}) and IoU(per-segment, global)={iou_s:.2f}")
+        print("  is low -> segmentation is actually reallocating; check if quality moves.")
     return recs
 
 
