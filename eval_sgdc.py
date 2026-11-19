@@ -163,7 +163,8 @@ def evaluate_split(gaussians, scene, dataset, pipe, views, name, store,
 
 
 def run(dataset, iteration, pipe, skip_train, skip_test, boundary_band,
-        json_out=None, lpips_net=DEFAULT_LPIPS_NET):
+        json_out=None, lpips_net=DEFAULT_LPIPS_NET,
+        adapter_name="replica", label_dir="", min_seg_area=0):
     # HLOC/COLMAP scenes here have no depth: force depth mode off.
     dataset.depths = ""
     _fill_model_defaults(dataset)
@@ -179,7 +180,9 @@ def run(dataset, iteration, pipe, skip_train, skip_test, boundary_band,
     store = None
     if SGDC_AVAILABLE:
         try:
-            adapter = get_adapter("replica", dataset.source_path)
+            adapter = get_adapter(adapter_name, dataset.source_path,
+                                  {"label_dir": label_dir or None,
+                                   "min_area": min_seg_area})
             store = SemanticStore(adapter, device="cuda")
             print(f"[sgdc-eval] label adapter: {adapter.meta()}")
         except Exception as e:
@@ -247,10 +250,21 @@ if __name__ == "__main__":
     parser.add_argument("--json_out", default="", type=str, help="write metrics JSON here")
     parser.add_argument("--lpips_net", default=DEFAULT_LPIPS_NET, type=str,
                         choices=["alex", "vgg", "squeeze"])
+    # Label source for the band/interior split. Defaults are None so
+    # get_combined_args lets the values saved in cfg_args at train time win;
+    # fall back to the Replica adapter when neither source is present.
+    parser.add_argument("--sgdc_adapter", default=None, type=str,
+                        help="label adapter name (sgdc/datasets)")
+    parser.add_argument("--sgdc_label_dir", default=None, type=str,
+                        help="per-view label directory (defaults per adapter)")
+    parser.add_argument("--sgdc_min_seg_area", default=None, type=int)
     parser.add_argument("--quiet", action="store_true")
     args = get_combined_args(parser)
     print("Evaluating " + args.model_path)
     safe_state(args.quiet)
     run(model.extract(args), args.iteration, pipeline.extract(args),
         args.skip_train, args.skip_test, args.boundary_band,
-        args.json_out or None, args.lpips_net)
+        args.json_out or None, args.lpips_net,
+        adapter_name=getattr(args, "sgdc_adapter", None) or "replica",
+        label_dir=getattr(args, "sgdc_label_dir", None) or "",
+        min_seg_area=getattr(args, "sgdc_min_seg_area", None) or 0)

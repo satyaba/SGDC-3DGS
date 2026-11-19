@@ -49,6 +49,48 @@ def signed_distance(label: np.ndarray, dt: np.ndarray, seg_ids: np.ndarray) -> n
     return np.where(inside, dt, -dt).astype(np.float32)
 
 
+def read_ids(path) -> np.ndarray:
+    """Read a label image as ``int32`` ids.
+
+    Uses PIL (not cv2) so palette (``mode='P'``) PNGs yield palette *indices*
+    rather than BGR colours, and 16-bit PNGs (e.g. SAM2 instance maps with more
+    than 255 masks) round-trip without truncation.
+    """
+    from PIL import Image
+
+    arr = np.array(Image.open(path))
+    if arr.ndim == 3:  # defensive: collapse unexpected multi-channel labels
+        arr = arr[..., 0]
+    return arr.astype(np.int32)
+
+
+def fill_void_nearest(ids: np.ndarray) -> np.ndarray:
+    """Assign every void (``0``) pixel the id of the nearest non-void pixel.
+
+    SAM2 (and other class-agnostic segmenters) leave unlabelled pixels wherever
+    no mask fires. Left as void, those pixels would spawn spurious "boundaries"
+    against every neighbouring instance and inflate the boundary band. Nearest
+    fill removes them without touching real instance edges.
+
+    Uses OpenCV's per-pixel distance labels (``DIST_LABEL_PIXEL``), so there is
+    no scipy dependency. An all-void (or empty) map is returned unchanged.
+    """
+    ids = np.asarray(ids)
+    void = ids == 0
+    if not void.any() or void.all():
+        return ids.astype(np.int32)
+    # void=1, non-void=0: the transform then measures, for every void pixel, the
+    # distance to the nearest non-void pixel and labels it with that pixel.
+    src = void.astype(np.uint8)
+    _, labels = cv2.distanceTransformWithLabels(
+        src, cv2.DIST_L2, 3, labelType=cv2.DIST_LABEL_PIXEL)
+    lut = np.zeros(int(labels.max()) + 1, dtype=np.int32)
+    lut[labels[~void]] = ids[~void]  # each non-void pixel owns its label
+    out = ids.astype(np.int32).copy()
+    out[void] = lut[labels[void]]
+    return out
+
+
 def segment_area_perimeter(label: np.ndarray):
     """Return ``(area, perimeter)`` dicts keyed by segment id."""
     ids, counts = np.unique(label, return_counts=True)

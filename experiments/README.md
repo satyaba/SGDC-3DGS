@@ -95,6 +95,33 @@ class-count arguments.
 Add a run by appending a `RunSpec` to `RUNS`. All runs share the `--eval`
 (llffhold=8) train/test split, so rows are comparable across methods.
 
+### Cross-dataset runs
+
+Beyond `office_0/Sequence_1`, the manifest carries the same three arms (**base**,
+**B=0.10**, **A.1**) for the cross-dataset study:
+
+| run family | dataset | label source |
+|---|---|---|
+| `room0_*`  | `room_0/Sequence_1` | Replica GT (`replica`) |
+| `garden_*` | `mipnerf360/garden` | SAM2 instances (`sam2`) |
+| `bicycle_*`| `mipnerf360/bicycle`| SAM2 instances (`sam2`) |
+
+Datasets resolve under `$DATASET_ROOT` (`$HOME_DIR/Dataset`). The Mip-NeRF 360
+scenes need preparation first (HLOC SfM + SAM2 pseudo-labels) — see
+`docs/datasets.md` and `Prepare_Datasets.ipynb`. The SAM2 arms pass
+`--sgdc_adapter sam2`; `eval_sgdc.py` reads the adapter back from `cfg_args`,
+so band/interior metrics work on these scenes too.
+
+Any arm can be replayed on another scene without editing the manifest:
+
+```bash
+python -m experiments.runs --run base_30k --dataset room_0/Sequence_1
+```
+
+```python
+run_by_id("base_30k", dataset="room_0/Sequence_1", tag="room0")
+```
+
 ### Running one method directly
 
 ```bash

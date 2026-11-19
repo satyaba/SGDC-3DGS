@@ -6,4 +6,4 @@ Gaussian Splatting codebase and is imported from ``train.py`` /
 ``scene/gaussian_model.py``.
 """
 
-__all__ = ["datasets", "semantic_utils", "semantic_store"]
+__all__ = ["datasets", "semantic_utils", "semantic_store", "segment_sam2", "prep", "headroom"]

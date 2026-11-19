@@ -55,7 +55,12 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     if getattr(opt, "sgdc_enable", False):
         from sgdc.datasets import get_adapter
         from sgdc.semantic_store import SemanticStore
-        adapter = get_adapter(getattr(opt, "sgdc_adapter", "replica"), dataset.source_path, {})
+        adapter_name = getattr(opt, "sgdc_adapter", "replica")
+        adapter_cfg = {
+            "label_dir": getattr(opt, "sgdc_label_dir", "") or None,
+            "min_area": getattr(opt, "sgdc_min_seg_area", 0),
+        }
+        adapter = get_adapter(adapter_name, dataset.source_path, adapter_cfg)
         gaussians.semantic_store = SemanticStore(adapter, device="cuda")
         print("[SGDC] label adapter:", adapter.meta())
 

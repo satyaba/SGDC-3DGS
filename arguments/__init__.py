@@ -100,6 +100,10 @@ class OptimizationParams(ParamGroup):
         # --- SGDC (Segmentation-Guided Density Control) ---
         self.sgdc_enable = False        # master switch
         self.sgdc_adapter = "replica"   # label adapter name (sgdc/datasets)
+        # Adapter config. label_dir empty -> the adapter's default (replica:
+        # <source>/semantic_class; instance_dir/sam2: <source>/semantic_instance).
+        self.sgdc_label_dir = ""        # override the per-view label directory
+        self.sgdc_min_seg_area = 0      # drop segments smaller than N px (0 = keep all)
         self.f_b = 0.5                  # boundary threshold factor (tau near boundary)
         self.f_int = 2.0               # interior threshold factor (tau in interior)
         self.eta = 0.3                  # split-threshold shrink near boundary

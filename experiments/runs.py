@@ -41,7 +41,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -250,6 +250,60 @@ RUNS: Dict[str, RunSpec] = {
 }
 
 
+# --------------------------------------------------------------------------- #
+# CROSS-DATASET RUNS (Mip-NeRF 360)                                             #
+# --------------------------------------------------------------------------- #
+# Same arms as the office_0 study, replayed on the non-segmented datasets so
+# every row is comparable (shared `--eval` llffhold=8 split, 30k iters). These
+# scenes have **no ground-truth segmentation**: SAM2 produces class-agnostic
+# instance pseudo-labels, read by the "sam2" adapter from
+# <dataset>/semantic_instance (see sgdc/segment_sam2.py, sgdc.prep.fuse_instances
+# and docs/datasets.md). No extra Replica scene is required for this study.
+#
+# Dataset dirs resolve under `$DATASET_ROOT/<path>`.
+_CROSS_DATASETS = {
+    # key        dataset path             adapter (None => GT "replica")
+    "garden": ("mipnerf360/garden", "sam2"),
+    "bicycle": ("mipnerf360/bicycle", "sam2"),
+}
+
+# (arm suffix, extra args, note). Kept to the three arms the office_0 report
+# found meaningful: plain baseline, the capacity budget (B), and A.1.
+_CROSS_ARMS = (
+    ("base", (), "SGDC off (plain 3DGS)."),
+    ("b10",
+     ("--sgdc_enable", "--f_b", "1.0", "--f_int", "1.0", "--eta", "0.0",
+      "--sgdc_budget_enable", "--sgdc_budget_B", "0.10"),
+     "Component B: segment error budget B=0.10 (A neutral)."),
+    ("sig",
+     ("--sgdc_enable", "--f_b", "1.0", "--f_int", "1.0", "--eta", "0.0",
+      "--sgdc_signal_enable", "--sgdc_split_k", "1.0"),
+     "A.1: mask-boundary straddle drives clone/split (A neutral)."),
+)
+
+
+def _cross_run_specs() -> List[RunSpec]:
+    specs: List[RunSpec] = []
+    for key, (ds, adapter) in _CROSS_DATASETS.items():
+        for arm, args, note in _CROSS_ARMS:
+            extra = list(args)
+            if adapter and extra:  # adapter only matters when SGDC is enabled
+                extra += ["--sgdc_adapter", adapter]
+            specs.append(RunSpec(
+                run_id=f"{key}_{arm}_30k",
+                method="sgdc",
+                iterations=30_000,
+                dataset=ds,
+                extra=tuple(extra),
+                notes=f"{ds}: {note}",
+            ))
+    return specs
+
+
+for _spec in _cross_run_specs():
+    RUNS[_spec.run_id] = _spec
+
+
 def full_runs() -> List[RunSpec]:
     return [r for r in RUNS.values() if not r.sanity]
 
@@ -291,7 +345,8 @@ def run(spec: RunSpec, home_dir: Optional[str] = None, dataset_root: Optional[st
         workdir_root: str = "/content", force: bool = False,
         skip_prepare: bool = False, dry: bool = False,
         extra: Union[str, Sequence[str], None] = None,
-        tag: Optional[str] = None, model_dir: Optional[str] = None) -> Path:
+        tag: Optional[str] = None, model_dir: Optional[str] = None,
+        dataset: Optional[str] = None) -> Path:
     """Launch one run.
 
     ``extra`` adds CLI tokens on top of the spec's own ``extra`` — e.g. to
@@ -306,7 +361,14 @@ def run(spec: RunSpec, home_dir: Optional[str] = None, dataset_root: Optional[st
     ``tag`` gives this call its own output directory
     (``<home>/output/<run_id>_<tag>``) so a sweep can run the same spec many
     times without clobbering results; ``model_dir`` overrides the path entirely.
+
+    ``dataset`` overrides the spec's dataset path (relative to ``$DATASET_ROOT``),
+    so an existing arm can be replayed on another scene::
+
+        run_by_id("base_30k", dataset="room_0/Sequence_1", tag="room0")
     """
+    if dataset:
+        spec = replace(spec, dataset=dataset)
     source = resolve_source(spec, home_dir, dataset_root)
     if model_dir is None:
         model_dir = _model_dir(spec, home_dir, tag=tag)
@@ -416,6 +478,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--force", action="store_true")
     p.add_argument("--skip-prepare", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--dataset", default=None,
+                   help="override the dataset path of --run (relative to --dataset-root)")
     args = p.parse_args(argv)
 
     if args.list:
@@ -433,7 +497,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     elif args.all:
         run_all(**kw)
     else:
-        run_by_id(args.run, **kw)
+        run_by_id(args.run, dataset=args.dataset, **kw)
     return 0
 
 

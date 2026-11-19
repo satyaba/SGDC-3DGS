@@ -91,7 +91,11 @@ A **segment** is the composite id `seg = (class_id, instance_id)`. Components pi
 - **B** (budgets) uses the composite unit — instance for objects, class for structures;
 - **D** (consistency) keys on **instance** (strongest cross-view signal).
 
-**Scope now: Replica only** (GT labels already present). SAM2 / 2D-semantic adapters are designed below but deferred.
+**Scope now: Replica GT + SAM2 instance pseudo-labels.** The Replica adapter
+reads GT class labels; `InstanceDirLabelAdapter` (`sam2` / `instance_dir`) reads
+offline, class-agnostic instance maps produced by `sgdc/segment_sam2.py` for
+non-segmented datasets (Mip-NeRF 360, ...). See `docs/datasets.md`. A
+class-associated `SemsegAdapter` remains deferred.
 
 Canonical contract consumed by SGDC (all aligned to `camera.image_height × camera.image_width`; **`0` = void**):
 
@@ -112,8 +116,9 @@ class LabelAdapter:                       # base
     def to_canonical(self, raw) -> np.ndarray       # remap ids, set void, class/instance
     def meta(self) -> dict                          # {"K","ignore_ids","source"}
 
-class ReplicaLabelAdapter(LabelAdapter): ...   # reads Replica GT PNGs  (in scope)
-# SAM2LabelAdapter / SemsegAdapter             -> deferred
+class ReplicaLabelAdapter(LabelAdapter): ...           # Replica GT PNGs
+class InstanceDirLabelAdapter(LabelAdapter): ...       # SAM2/instance maps (in scope)
+# SemsegAdapter (class-associated)                      -> deferred
 ```
 
 `SemanticStore` loads `L_v`, **nearest-neighbor** resizes to `[H_v,W_v]` (ids must never be bilinearly interpolated), computes `dt_v`/`n_v`, and caches.

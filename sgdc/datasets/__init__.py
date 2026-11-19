@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 from .base import LabelAdapter
+from .instance_dir import InstanceDirLabelAdapter
 from .replica import ReplicaLabelAdapter
 
 _ADAPTERS = {
     "replica": ReplicaLabelAdapter,
+    # Class-agnostic instance maps (SAM2 pseudo-labels, ...). "sam2" is an alias
+    # so a run reads naturally: --sgdc_adapter sam2.
+    "instance_dir": InstanceDirLabelAdapter,
+    "sam2": InstanceDirLabelAdapter,
 }
 
 
@@ -16,4 +21,4 @@ def get_adapter(name: str, dataset_dir, cfg=None) -> LabelAdapter:
     return _ADAPTERS[key](dataset_dir, cfg)
 
 
-__all__ = ["LabelAdapter", "ReplicaLabelAdapter", "get_adapter"]
+__all__ = ["LabelAdapter", "ReplicaLabelAdapter", "InstanceDirLabelAdapter", "get_adapter"]

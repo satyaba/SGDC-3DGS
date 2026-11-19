@@ -9,8 +9,9 @@ better reconstruction quality on boundaries at a comparable Gaussian budget.
 
 - Method & math spec: [`docs/sgdc_spec.md`](docs/sgdc_spec.md)
 - Experiment findings report: [`docs/sgdc_report.md`](docs/sgdc_report.md)
+- Dataset prep & registry: [`docs/datasets.md`](docs/datasets.md)
 - Experiment harness (baselines, sweeps, metrics): [`experiments/README.md`](experiments/README.md)
-- Colab driver: [`Run_Experiments.ipynb`](Run_Experiments.ipynb)
+- Colab drivers: [`Run_Experiments.ipynb`](Run_Experiments.ipynb) (train/eval), [`Prepare_Datasets.ipynb`](Prepare_Datasets.ipynb) (HLOC + SAM2 prep)
 
 ## Relationship to upstream
 
