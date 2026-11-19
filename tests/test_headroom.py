@@ -84,6 +84,24 @@ def test_divergence_empty_and_guards():
     assert dv["delta_total"] == 1 and dv["tv"] == 0.0
 
 
+def test_divergence_labeled_only_removes_unlabeled_floor():
+    # unlabeled points carry the highest priority; with labeled_only the global
+    # control can't touch them, so a single-segment partition reads exactly 0.
+    q = np.array([1.0, 1, 1, 1, 9, 9])
+    seg = np.array([1, 1, 1, 1, 0, 0])
+    loose = hr.allocation_divergence(q, seg, B=0.5, labeled_only=False)
+    strict = hr.allocation_divergence(q, seg, B=0.5, labeled_only=True)
+    assert loose["tv"] > 0.0
+    assert abs(strict["tv"]) < 1e-9
+
+
+def test_drop_large_voids_dominant_segment():
+    seg = np.array([1, 1, 1, 1, 2, 2, 0])
+    dropped = hr._drop_large(seg, 0.4)          # seg1=4/6 > 0.4 -> void; seg2 kept
+    assert set(np.unique(dropped).tolist()) == {0, 2}
+    assert np.array_equal(hr._drop_large(seg, 1.0), seg)   # no-op
+
+
 def test_n_seg_helper():
     assert hr._n_seg(None) == 0
     assert hr._n_seg(np.zeros(3, dtype=int)) == 0

@@ -208,18 +208,32 @@ to move its allocation away from the scene-global control. Check that *before*
 spending a run — pre-training, from COLMAP + labels + images only:
 
 ```bash
-python -m sgdc.headroom --dataset_dir "$DATASET_ROOT/mipnerf360/garden" \
+python -m sgdc.headroom --dataset_dir "$DATASET_ROOT/garden" \
     --fused_dir semantic_instance_fused --raw_dir semantic_instance \
-    --B 0.10 --gamma 0.5
+    --B 0.10 --gammas 0.0 0.5 1.0
 ```
 
 It stands in for Gaussians with the COLMAP points and for B's `|grad|` with an
 image-gradient proxy, then calls the **real** `sgdc.budget` selection and reports
 the total-variation distance between the per-segment and global allocations
-(`TV`), calibrated against a single-segment control (`TV == 0`) and a
-size-preserving random permutation (chance). If fused `TV` is near the random
-control, the partition is not steering the budget and no labeling can help; if it
-clearly beats it, a segmentation effect is at least possible.
+(`TV`), calibrated against:
+
+- **`single-segment (ctrl)`** — one segment *is* the global control; with the
+  default `--include_unlabeled` off this reads exactly `0.000` (the diagnostic
+  floor), so any `TV` below ~0.05 is "no effect".
+- **`random (ctrl,…)`** — the same segment **sizes** with the structure shuffled.
+  This is the bar that matters: the semantic structure counts only if
+  `fused TV` **exceeds** the random control. If `fused TV ≤ random TV`, the
+  partition reallocates the budget no more than size alone — B's segmentation is
+  **not steering** (the office_0 outcome).
+- **`--gammas a b c`** prints a TV table over several `gamma` (size-discount)
+  values, so you can see whether *any* setting lets fused beat the control. If it
+  never does, B's segmentation is inert on that scene.
+
+Useful extras: `--drop_above_frac 0.2` voids segments larger than 20% of points
+(e.g. a dominant background/stuff blob) to test "objects-only" budgeting;
+`--include_unlabeled` restores the training-faithful global control (unlabeled
+points allowed).
 
 ## 6. Caveats / risks
 
