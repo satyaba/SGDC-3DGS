@@ -92,6 +92,17 @@ def test_instance_dir_adapter_min_area_and_fill():
         assert set(np.unique(filled).tolist()) == {4}
 
 
+def test_instance_dir_relative_label_dir_resolves_against_dataset():
+    with tempfile.TemporaryDirectory() as d:
+        ds = Path(d)
+        _write_ids(ds / "semantic_instance_fused" / "a.png",
+                   np.array([[0, 1], [2, 2]], dtype=np.int32))
+        # relative label_dir must resolve against the dataset, not the cwd
+        a = get_adapter("instance_dir", ds, {"label_dir": "semantic_instance_fused"})
+        assert Path(a.label_dir).resolve() == (ds / "semantic_instance_fused").resolve()
+        assert a.load("a.png") is not None
+
+
 def test_instance_dir_adapter_missing_dir_raises():
     with tempfile.TemporaryDirectory() as d:
         try:

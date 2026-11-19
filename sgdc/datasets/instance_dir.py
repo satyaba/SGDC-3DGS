@@ -42,7 +42,13 @@ class InstanceDirLabelAdapter(LabelAdapter):
         super().__init__(dataset_dir, cfg)
 
         label_dir = self.cfg.get("label_dir")
-        self.label_dir = Path(label_dir) if label_dir else (self.dataset_dir / "semantic_instance")
+        if label_dir:
+            p = Path(label_dir)
+            # a relative label dir is resolved against the dataset, matching the
+            # fusion / headroom tools (otherwise it would be relative to the cwd)
+            self.label_dir = p if p.is_absolute() else (self.dataset_dir / p)
+        else:
+            self.label_dir = self.dataset_dir / "semantic_instance"
         self.void_id = int(self.cfg.get("void_id", 0))
         self.min_area = int(self.cfg.get("min_area", 0) or 0)
         self.fill_void = bool(self.cfg.get("fill_void", False))
