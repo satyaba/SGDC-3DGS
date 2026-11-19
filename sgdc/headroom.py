@@ -273,26 +273,39 @@ def run_headroom(dataset_dir: str | Path, *, fused_dir: Optional[str] = None,
         report["labelings"][name] = {"stats": st, "divergence": dv}
 
     fused = labelings.get("fused")
-    if fused is not None:
-        seg_one = np.where(fused > 0, 1, 0)
+    raw = labelings.get("raw (first-view)")
+    # A single-segment control (== global, TV 0) drawn from whichever partition we have.
+    ref = fused if fused is not None else raw
+    if ref is not None:
+        seg_one = np.where(ref > 0, 1, 0)
         st = segment_stats(seg_one)
         dv = allocation_divergence(q, seg_one, B=B, gamma=gamma)
         print(_fmt_row("single-segment (ctrl)", st, dv))
         report["labelings"]["single"] = {"stats": st, "divergence": dv}
 
+    # Size-preserving random control. Build it from a NON-degenerate partition so
+    # a collapsed `fused` (n_seg==1) does not make the control trivially 0 too.
+    ref_rand = fused if _n_seg(fused) > 1 else (raw if _n_seg(raw) > 1 else None)
+    if ref_rand is not None:
         rng = np.random.default_rng(seed)
-        seg_rand = seg_one.copy()
-        lab = np.nonzero(seg_one > 0)[0]
-        perm = rng.permutation(fused[lab])          # keep sizes, shuffle structure
-        seg_rand[lab] = perm
-        # permuted ids may collide arbitrarily; keep as-is (structure destroyed)
+        seg_rand = np.where(ref_rand > 0, 0, 0)
+        lab = np.nonzero(ref_rand > 0)[0]
+        seg_rand[lab] = rng.permutation(ref_rand[lab])   # keep sizes, shuffle structure
         st = segment_stats(seg_rand)
         dv = allocation_divergence(q, seg_rand, B=B, gamma=gamma)
-        print(_fmt_row("random (ctrl)", st, dv))
-        report["labelings"]["random"] = {"stats": st, "divergence": dv}
+        src = "fused" if _n_seg(fused) > 1 else "raw"
+        print(_fmt_row(f"random (ctrl,{src})", st, dv))
+        report["labelings"]["random"] = {"stats": st, "divergence": dv, "source": src}
+    else:
+        print("[headroom] random control skipped: no non-degenerate partition "
+              "(fusion likely collapsed).", flush=True)
 
     _print_verdict(report)
     return report
+
+
+def _n_seg(seg: Optional[np.ndarray]) -> int:
+    return int(seg.max()) if seg is not None and seg.size else 0
 
 
 def _support_per_segment(seg: np.ndarray, scene: sio.ColmapScene) -> np.ndarray:
@@ -313,12 +326,20 @@ def _support_per_segment(seg: np.ndarray, scene: sio.ColmapScene) -> np.ndarray:
 
 
 def _print_verdict(report: dict) -> None:
-    fused = report["labelings"].get("fused", {}).get("divergence")
+    fused_lab = report["labelings"].get("fused", {})
+    fused = fused_lab.get("divergence")
     rand = report["labelings"].get("random", {}).get("divergence")
     raw = report["labelings"].get("raw (first-view)", {}).get("divergence")
     if not fused:
         return
+    n_seg_fused = fused_lab.get("stats", {}).get("n_seg", 0)
     print("\n[headroom] reading:")
+    if n_seg_fused <= 1:
+        print(f"  fused has n_seg={n_seg_fused}: the labeling is DEGENERATE "
+              "(fusion collapsed to one segment), so TV=0 is an artifact, not a "
+              "verdict. Fix the fusion (metric=overlap / lower --min_score / "
+              "--no_fill_void masks) and re-run.")
+        return
     print(f"  fused TV={fused['tv']:.3f} vs random-control TV="
           f"{(rand or {}).get('tv', float('nan')):.3f}"
           + (f", raw TV={raw['tv']:.3f}" if raw else ""))

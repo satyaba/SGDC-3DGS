@@ -84,6 +84,12 @@ def test_divergence_empty_and_guards():
     assert dv["delta_total"] == 1 and dv["tv"] == 0.0
 
 
+def test_n_seg_helper():
+    assert hr._n_seg(None) == 0
+    assert hr._n_seg(np.zeros(3, dtype=int)) == 0
+    assert hr._n_seg(np.array([0, 1, 2, 2], dtype=int)) == 2
+
+
 def test_first_view_labels_are_first_seen():
     if _skip_if_no_torch():
         return

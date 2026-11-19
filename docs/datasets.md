@@ -106,11 +106,22 @@ Then point SGDC at the fused maps:
 ```
 
 Algorithm (a stripped MaskClustering / SAMPro3D): lift each mask to 3D by keeping
-COLMAP points that project onto it → masks that share ≥ `min_shared_points` points
-are unioned (optional mean-colour gate) → clusters seen in ≥ `min_views` frames
-become global instances, the rest fall to void (B never budgets id 0). Output is
-per-view `semantic_instance_fused/<stem>.png` plus `point_labels.npy` (per-COLMAP-point
-ids) and `fusion_summary.json`.
+COLMAP points that project onto it → merge masks whose **3D point sets overlap**
+enough (`--metric jaccard|overlap` with `--min_score`, plus an optional
+`--color_sim` gate) → clusters seen in ≥ `--min_views` frames become global
+instances, the rest fall to void (B never budgets id 0). Output is per-view
+`semantic_instance_fused/<stem>.png` plus `point_labels.npy` (per-COLMAP-point ids)
+and `fusion_summary.json`.
+
+> **Association choice matters.** The default is **overlap** (`--metric jaccard`),
+> *not* the old shared-point-count rule (`--metric shared`). The shared rule
+> single-links through hub points and collapses a whole scene into one instance —
+> watch for the `[fuse] WARNING: only one instance …` line. If a scene still
+> over-merges, lower `--min_score` won't help; instead re-label with
+> `segment_sam2 --no_fill_void` (don't tile the background) and/or raise
+> `--min_score`. `fusion_summary.json` reports `instances`, `largest_instance_frac`
+> and size percentiles — `instances == 1` or `largest_instance_frac > 0.6` means
+> the labeling is degenerate and headroom/training numbers are not meaningful.
 
 **Ingesting off-the-shelf methods.** MaskClustering/SAMPro3D emit *per-point-cloud*
 labels. `sgdc.prep.scene_io.splat_point_labels_to_views(scene, labels, out_dir)`

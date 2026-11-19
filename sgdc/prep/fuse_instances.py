@@ -119,6 +119,96 @@ def associate_observations(
     return uf.roots()
 
 
+def _mask_centroids(obs_points: Sequence[np.ndarray], coords: np.ndarray) -> np.ndarray:
+    cents = np.full((len(obs_points), 3), np.nan, dtype=np.float64)
+    for i, pts in enumerate(obs_points):
+        if len(pts):
+            cents[i] = coords[np.asarray(pts)].mean(axis=0)
+    return cents
+
+
+def _intersection_size(a: np.ndarray, b: np.ndarray) -> int:
+    """|a ∩ b| for two sorted unique index arrays."""
+    if a.size == 0 or b.size == 0:
+        return 0
+    if a.size > b.size:
+        a, b = b, a
+    pos = np.searchsorted(b, a)
+    pos = np.clip(pos, 0, b.size - 1)
+    return int(np.count_nonzero(b[pos] == a))
+
+
+def associate_by_overlap(
+    obs_points: Sequence[np.ndarray],
+    coords: np.ndarray,
+    obs_colors: Optional[Sequence[np.ndarray]] = None,
+    *,
+    metric: str = "jaccard",
+    min_score: float = 0.25,
+    color_sim: float = 0.0,
+    grid_cell: Optional[float] = None,
+    neighbor_steps: int = 2,
+) -> List[int]:
+    """Union-find over masks using **point-set overlap**, not shared-point count.
+
+    Fixes the collapse of the naive ``shared`` rule: a single 3D point seen by
+    many per-frame region masks used to transitively merge everything into one
+    blob. Here two masks merge only if their *whole* 3D point sets overlap enough:
+    ``jaccard = |A∩B|/|A∪B|`` or ``overlap = |A∩B|/min(|A|,|B|)`` >= ``min_score``
+    (plus the optional colour gate). Candidate pairs are restricted to spatially
+    nearby masks (3D centroid grid sized to the masks' own extent) so the
+    association stays cheap.
+    """
+    n = len(obs_points)
+    uf = UnionFind(n)
+    if n == 0:
+        return []
+
+    sizes = np.array([len(p) for p in obs_points], dtype=np.int64)
+    cents = _mask_centroids(obs_points, coords)
+    good = np.isfinite(cents).all(axis=1) & (sizes > 0)
+    idx = np.nonzero(good)[0]
+    if idx.size == 0:
+        return uf.roots()
+
+    # per-mask spatial radius (how far its own points spread from its centroid)
+    radii = np.zeros(n, dtype=np.float64)
+    for i in idx.tolist():
+        d = coords[np.asarray(obs_points[i])] - cents[i]
+        radii[i] = float(np.linalg.norm(d, axis=1).max()) if d.size else 0.0
+    pt_extent = float(np.linalg.norm(coords.max(0) - coords.min(0))) or 1.0
+    cell = grid_cell if grid_cell else max(float(np.median(radii[idx])), pt_extent / 256.0, 1e-9)
+
+    grid: Dict[tuple, List[int]] = defaultdict(list)
+    for i in idx.tolist():
+        grid[tuple(np.floor(cents[i] / cell).astype(int))].append(i)
+
+    steps = int(max(0, neighbor_steps))
+    offs = [(dx, dy, dz)
+            for dx in range(-steps, steps + 1)
+            for dy in range(-steps, steps + 1)
+            for dz in range(-steps, steps + 1)]
+    for i in idx.tolist():
+        key = tuple(np.floor(cents[i] / cell).astype(int))
+        a = obs_points[i]
+        for off in offs:
+            for j in grid.get((key[0] + off[0], key[1] + off[1], key[2] + off[2]), ()):
+                if j <= i:
+                    continue
+                inter = _intersection_size(a, obs_points[j])
+                if metric == "overlap":
+                    score = inter / min(sizes[i], sizes[j])
+                else:  # jaccard
+                    score = inter / (sizes[i] + sizes[j] - inter)
+                if score < min_score:
+                    continue
+                if color_sim > 0.0 and obs_colors is not None:
+                    if _cos_sim(obs_colors[i], obs_colors[j]) < color_sim:
+                        continue
+                uf.union(i, j)
+    return uf.roots()
+
+
 def assign_global_ids(
     roots: Sequence[int],
     obs_cam: Sequence[int],
@@ -220,10 +310,14 @@ def fuse_instances(
     min_views: int = 2,
     color_sim: float = 0.0,
     radius_fill: int = 0,
+    metric: str = "jaccard",
+    min_score: float = 0.25,
     summary_path: Optional[str | Path] = None,
 ) -> dict:
     """Fuse per-frame masks into consistent 3D instances.
 
+    Association defaults to overlap-based (``metric="jaccard"``, ``min_score``)
+    which avoids the single-linkage collapse of the old ``metric="shared"`` rule.
     Writes ``<dataset>/<out_dir>/<stem>.png`` (per-view consistent ids) and
     ``<dataset>/<out_dir>/point_labels.npy`` (per-COLMAP-point ids), plus a
     summary JSON. Returns the summary dict.
@@ -243,9 +337,16 @@ def fuse_instances(
           f"{len(labeled_cams)}/{len(scene.cameras)} labeled frames", flush=True)
 
     point_index = build_point_index(obs_points)
-    roots = associate_observations(
-        obs_points, obs_colors, min_shared_points=min_shared_points,
-        color_sim=color_sim, point_index=point_index)
+    if metric == "shared":
+        roots = associate_observations(
+            obs_points, obs_colors, min_shared_points=min_shared_points,
+            color_sim=color_sim, point_index=point_index)
+    else:
+        print(f"[fuse] association: metric={metric} min_score={min_score} "
+              f"color_sim={color_sim}", flush=True)
+        roots = associate_by_overlap(
+            obs_points, scene.xyz, obs_colors, metric=metric,
+            min_score=min_score, color_sim=color_sim)
     gid_of_obs = assign_global_ids(roots, obs_cam, min_views=min_views)
     n_instances = max(gid_of_obs, default=0)
 
@@ -289,6 +390,9 @@ def fuse_instances(
     for g in range(1, n_instances + 1):
         support[g] = len({obs_cam[oi] for oi in range(len(obs)) if gid_of_obs[oi] == g})
 
+    inst_sizes = sizes[1:]
+    total_pts = int(sizes[1:].sum()) or 1
+    largest_frac = float(inst_sizes.max() / total_pts) if inst_sizes.size else 0.0
     summary = {
         "dataset": str(dataset_dir),
         "labels_dir": str(labels_dir),
@@ -299,16 +403,32 @@ def fuse_instances(
         "instances": int(n_instances),
         "views_written": written,
         "kept_obs": int(sum(1 for g in gid_of_obs if g > 0)),
+        "metric": metric,
+        "min_score": min_score,
         "min_shared_points": min_shared_points,
         "min_views": min_views,
         "color_sim": color_sim,
+        "largest_instance_frac": round(largest_frac, 3),
+        "instance_size_p50": int(np.percentile(inst_sizes, 50)) if inst_sizes.size else 0,
+        "instance_size_p90": int(np.percentile(inst_sizes, 90)) if inst_sizes.size else 0,
         "support_hist": np.bincount(support[1:]).tolist() if n_instances else [],
         "points_labeled": int((point_labels > 0).sum()),
     }
     sp = Path(summary_path) if summary_path else out_dir / "fusion_summary.json"
     sp.write_text(json.dumps(summary, indent=2))
     print(f"[fuse] {n_instances} instances | {summary['kept_obs']}/{len(obs)} masks kept | "
-          f"{summary['points_labeled']} points labeled -> {out_dir}", flush=True)
+          f"largest={largest_frac:.0%} of points | {summary['points_labeled']} points labeled "
+          f"-> {out_dir}", flush=True)
+    # collapse guard: a single (or dominant) instance means association failed and
+    # Component B cannot move on this labeling.
+    if n_instances <= 1:
+        print("[fuse] WARNING: only one instance -- association collapsed. "
+              "Try metric=overlap, a lower --min_score, or --no_fill_void masks.",
+              flush=True)
+    elif largest_frac > 0.6:
+        print(f"[fuse] WARNING: one instance covers {largest_frac:.0%} of labeled points; "
+              "the partition is dominated by a single blob -- check --min_score/--color_sim.",
+              flush=True)
     print(f"[fuse] summary -> {sp}", flush=True)
     return summary
 
@@ -322,7 +442,11 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--images_subdir", default="images")
     ap.add_argument("--sparse_subdir", default="sparse/0")
     ap.add_argument("--min_shared_points", type=int, default=2,
-                    help="3D points two masks must share to merge")
+                    help="only for --metric shared: points two masks must share to merge")
+    ap.add_argument("--metric", default="jaccard", choices=["jaccard", "overlap", "shared"],
+                    help="mask association: point-set (jaccard/overlap) or shared-count")
+    ap.add_argument("--min_score", type=float, default=0.25,
+                    help="min point-set Jaccard/overlap to merge (jaccard/overlap metrics)")
     ap.add_argument("--min_views", type=int, default=2,
                     help="drop instances seen in fewer than this many frames")
     ap.add_argument("--color_sim", type=float, default=0.0,
@@ -333,7 +457,8 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         args.dataset_dir, labels_dir=args.labels_dir, out_dir=args.out_dir,
         images_subdir=args.images_subdir, sparse_subdir=args.sparse_subdir,
         min_shared_points=args.min_shared_points, min_views=args.min_views,
-        color_sim=args.color_sim, radius_fill=args.radius_fill)
+        color_sim=args.color_sim, radius_fill=args.radius_fill,
+        metric=args.metric, min_score=args.min_score)
     return 0
 
 

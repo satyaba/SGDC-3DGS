@@ -82,6 +82,57 @@ def test_assign_global_ids_dense_and_stable():
 
 
 # --------------------------------------------------------------------------- #
+# overlap-based association (the fix)                                           #
+# --------------------------------------------------------------------------- #
+def test_overlap_assoc_merges_same_object_only():
+    # A,B = same point set (same object across views); C = disjoint
+    coords = np.array([[0., 0, 0], [0.1, 0, 0], [0.2, 0, 0],
+                       [5., 0, 0], [5.1, 0, 0], [5.2, 0, 0]], dtype=float)
+    obs = [np.array([0, 1, 2]), np.array([0, 1, 2]), np.array([3, 4, 5])]
+    roots = fi.associate_by_overlap(obs, coords, metric="jaccard", min_score=0.25)
+    assert roots[0] == roots[1]
+    assert roots[2] != roots[0]
+
+
+def test_overlap_assoc_resists_hub_point_collapse():
+    # three distinct masks that share only ONE hub point: must NOT all collapse
+    coords = np.array([[i * 0.1, 0, 0] for i in range(12)] + [[0.0, 0, 0]], dtype=float)
+    hub = 12
+    obs = [np.array([0, 1, 2, 3, hub]),
+           np.array([4, 5, 6, 7, hub]),
+           np.array([8, 9, 10, 11, hub])]
+    roots = fi.associate_by_overlap(obs, coords, metric="jaccard", min_score=0.25)
+    assert roots[0] != roots[1] != roots[2] != roots[0]
+    # the old shared-count rule *would* collapse them
+    old = fi.associate_observations(obs, min_shared_points=1)
+    assert old[0] == old[1] == old[2]
+
+
+def test_overlap_metric_merges_subset_fragment():
+    coords = np.array([[0., 0, 0], [0.1, 0, 0], [0.2, 0, 0], [0.3, 0, 0]], dtype=float)
+    full = np.array([0, 1, 2, 3])
+    frag = np.array([0, 1])                      # a sub-part of the same object
+    # jaccard = 2/4 = 0.5; overlap = 2/2 = 1.0
+    r_j = fi.associate_by_overlap([full, frag], coords, metric="jaccard", min_score=0.75)
+    assert r_j[0] != r_j[1]
+    r_o = fi.associate_by_overlap([full, frag], coords, metric="overlap", min_score=0.75)
+    assert r_o[0] == r_o[1]
+
+
+def test_overlap_assoc_color_gate():
+    coords = np.array([[0., 0, 0], [0.1, 0, 0]], dtype=float)
+    obs = [np.array([0, 1]), np.array([0, 1])]            # identical point sets
+    colors = [np.array([1., 0, 0]), np.array([0., 0, 1])]  # orthogonal colours
+    r = fi.associate_by_overlap(obs, coords, colors, metric="jaccard",
+                                min_score=0.5, color_sim=0.9)
+    assert r[0] != r[1]
+    same = [np.array([1., 0, 0]), np.array([0.9, 0, 0.1])]
+    r2 = fi.associate_by_overlap(obs, coords, same, metric="jaccard",
+                                 min_score=0.5, color_sim=0.5)
+    assert r2[0] == r2[1]
+
+
+# --------------------------------------------------------------------------- #
 # projection / splatting                                                        #
 # --------------------------------------------------------------------------- #
 def _cam(name="rgb_0.png", W=100, H=100, f=100.0, R=None, t=None):
