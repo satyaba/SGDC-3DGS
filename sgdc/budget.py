@@ -47,6 +47,33 @@ def per_gaussian_priority(grads, err_sum, norm_sum, use_error: bool = True):
     return g * e
 
 
+def drop_oversized_segments(seg, max_seg_frac: float = 1.0):
+    """Remap segments covering more than ``max_seg_frac`` of labelled entries to 0.
+
+    A single dominant "stuff" segment (e.g. the background) makes B's
+    per-segment allocation ≈ the scene-global control, so the segmentation has
+    no effect. Voiding such segments (they are then only reachable by the global
+    top-up, never by per-segment allocation) restores segmentation influence.
+    Returns ``(seg_remapped, n_seg)``.
+    """
+    if seg.numel() == 0:
+        return seg, 0
+    seg = seg.reshape(-1).clamp_min(0)
+    n_seg = int(seg.max().item())
+    if max_seg_frac >= 1.0 or n_seg == 0:
+        return seg, n_seg
+    counts = torch.bincount(seg)
+    labeled = int(counts[1:].sum().item()) if counts.numel() > 1 else 0
+    if labeled <= 0:
+        return seg, n_seg
+    big = counts > max_seg_frac * labeled
+    big[0] = False
+    if bool(big.any()):
+        seg = seg.clone()
+        seg[big[seg]] = 0
+    return seg, int(seg.max().item())
+
+
 def segment_priority(q, seg, n_seg: int, gamma: float = 0.5):
     """``p_c`` for segment ids ``0..n_seg`` (0 == unlabeled/unseen).
 

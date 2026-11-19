@@ -235,6 +235,15 @@ Useful extras: `--drop_above_frac 0.2` voids segments larger than 20% of points
 `--include_unlabeled` restores the training-faithful global control (unlabeled
 points allowed).
 
+**Training counterpart.** `--drop_above_frac` is a *diagnostic*; the matching
+**training** flag is `--sgdc_budget_max_seg_frac F` — in the budget path it
+returns any segment covering more than `F` of the Gaussians to `id 0`, so a
+dominant stuff segment is reached only by the global top-up, not by per-segment
+allocation (labels and band/interior metrics are untouched). If the headroom test
+only shows `fused > random` after dropping the blob, set this to mirror it and
+run the A/B: per-segment `--sgdc_budget_max_seg_frac 0.2` vs `--sgdc_budget_global`
+vs plain per-segment.
+
 ## 6. Caveats / risks
 
 - **Label noise.** SAM2 masks are not GT; a single bad frame pollutes that

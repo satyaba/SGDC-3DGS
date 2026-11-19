@@ -47,6 +47,22 @@ def test_per_gaussian_priority_error_x_gradient():
     assert torch.isfinite(z).all()
 
 
+def test_drop_oversized_segments():
+    if _skip_if_no_torch():
+        return
+    seg = torch.tensor([1, 1, 1, 1, 2, 2, 0])
+    # id 1 covers 4/6 > 0.4 of labelled entries -> voided; id 2 (2/6) kept
+    out, n_seg = sgb.drop_oversized_segments(seg, 0.4)
+    assert out.tolist() == [0, 0, 0, 0, 2, 2, 0]
+    assert n_seg == 2
+    # fraction 1.0 is a no-op
+    same, n2 = sgb.drop_oversized_segments(seg, 1.0)
+    assert same.tolist() == seg.tolist() and n2 == 2
+    # empty input
+    e, n3 = sgb.drop_oversized_segments(torch.zeros(0, dtype=torch.long), 0.2)
+    assert e.numel() == 0 and n3 == 0
+
+
 def test_segment_priority_capacity_normalized():
     if _skip_if_no_torch():
         return

@@ -118,6 +118,7 @@ class OptimizationParams(ParamGroup):
         self.sgdc_budget_global = False  # non-segmented control: budget top-k scene-globally
         self.sgdc_budget_alloc_floor = 0.0  # 0=priority, 1=equal slice per class
         self.sgdc_budget_gamma = 0.5        # size-discount exponent in p_c = sum q / n^gamma
+        self.sgdc_budget_max_seg_frac = 1.0  # drop segments covering > this fraction of Gaussians (0 voids none; <1 voids stuff blobs)
         self.sgdc_budget_debug = False    # log per-step probe to $SGDC_BUDGET_DEBUG_PATH
         # Reading A.1: mask-boundary straddle drives clone vs split
         self.sgdc_signal_enable = False  # split Gaussians whose footprint straddles a boundary
