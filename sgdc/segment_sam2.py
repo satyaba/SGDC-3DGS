@@ -112,7 +112,7 @@ def _save_ids(path: Path, ids: np.ndarray) -> None:
 # --------------------------------------------------------------------------- #
 def _build_generator(ckpt: str, cfg: str, device: str,
                      points_per_side: int, pred_iou_thresh: float,
-                     stability_score_thresh: float):
+                     stability_score_thresh: float, points_per_batch: int = 64):
     from sam2.build_sam import build_sam2
     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
@@ -120,6 +120,7 @@ def _build_generator(ckpt: str, cfg: str, device: str,
     return SAM2AutomaticMaskGenerator(
         model,
         points_per_side=points_per_side,
+        points_per_batch=points_per_batch,
         pred_iou_thresh=pred_iou_thresh,
         stability_score_thresh=stability_score_thresh,
     )
@@ -134,6 +135,7 @@ def label_dataset(
     sam2_cfg: str = "configs/sam2.1/sam2.1_hiera_l.yaml",
     device: str = "cuda",
     points_per_side: int = 32,
+    points_per_batch: int = 64,
     pred_iou_thresh: float = 0.88,
     stability_score_thresh: float = 0.95,
     min_area: int = 100,
@@ -146,8 +148,12 @@ def label_dataset(
     """Label every frame under ``dataset_dir/images`` into ``semantic_instance``.
 
     Returns the number of frames written. Existing labels are skipped unless
-    ``overwrite``. ``resize_long_side`` speeds SAM2 up by capping the working
-    resolution (ids are written back at the native frame size).
+    ``overwrite``.
+
+    Memory knobs (SAM2 AMG is the peak): ``resize_long_side`` caps the working
+    resolution (ids are written back at native size), ``points_per_side`` sets the
+    prompt grid (cost ~ O(n^2): 64 is 4x 32), and ``points_per_batch`` caps how
+    many prompts are decoded at once. CUDA cache is released after every frame.
     """
     dataset_dir = Path(dataset_dir)
     img_dir = dataset_dir / images_subdir
@@ -158,7 +164,9 @@ def label_dataset(
         raise FileNotFoundError(f"no images under {img_dir}")
 
     gen = _build_generator(sam2_ckpt, sam2_cfg, device, points_per_side,
-                           pred_iou_thresh, stability_score_thresh)
+                           pred_iou_thresh, stability_score_thresh, points_per_batch)
+
+    import torch
 
     written = 0
     for k, p in enumerate(imgs[::stride]):
@@ -172,15 +180,19 @@ def label_dataset(
             s = resize_long_side / max(H, W)
             work = np.array(Image.fromarray(rgb).resize((int(round(W * s)), int(round(H * s)))))
 
-        raw = gen.generate(work)
+        with torch.inference_mode():
+            raw = gen.generate(work)
         masks = [m["segmentation"] for m in raw]
         scores = [float(m.get("predicted_iou", 0.0)) + float(m.get("stability_score", 0.0))
                   for m in raw]
+        del raw
         inst = masks_to_instance_map(
             masks, scores, min_area=min_area, max_area_frac=max_area_frac,
             fill_void=fill_void, out_shape=(H, W))
         _save_ids(outp, inst)
         written += 1
+        if device.startswith("cuda"):
+            torch.cuda.empty_cache()      # AMG peaks per image; release before the next
         print(f"[sam2] {k + 1}/{len(imgs[::stride])} {p.name}: "
               f"{int(inst.max())} instances -> {outp}", flush=True)
 
@@ -197,11 +209,14 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--sam2_cfg", default="configs/sam2.1/sam2.1_hiera_l.yaml")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--points_per_side", type=int, default=32)
+    ap.add_argument("--points_per_batch", type=int, default=64,
+                    help="AMG prompt batch size; lower it if SAM2 OOMs")
     ap.add_argument("--pred_iou_thresh", type=float, default=0.88)
     ap.add_argument("--stability_score_thresh", type=float, default=0.95)
     ap.add_argument("--min_area", type=int, default=100)
     ap.add_argument("--max_area_frac", type=float, default=0.9)
-    ap.add_argument("--resize_long_side", type=int, default=None)
+    ap.add_argument("--resize_long_side", type=int, default=None,
+                    help="cap the working resolution (e.g. 1024) to save memory")
     ap.add_argument("--stride", type=int, default=1)
     ap.add_argument("--no_fill_void", action="store_true")
     ap.add_argument("--overwrite", action="store_true")
@@ -211,7 +226,8 @@ def _main(argv: Optional[Sequence[str]] = None) -> int:
         args.dataset_dir,
         images_subdir=args.images_subdir, out_subdir=args.out_subdir,
         sam2_ckpt=args.sam2_ckpt, sam2_cfg=args.sam2_cfg, device=args.device,
-        points_per_side=args.points_per_side, pred_iou_thresh=args.pred_iou_thresh,
+        points_per_side=args.points_per_side, points_per_batch=args.points_per_batch,
+        pred_iou_thresh=args.pred_iou_thresh,
         stability_score_thresh=args.stability_score_thresh,
         min_area=args.min_area, max_area_frac=args.max_area_frac,
         fill_void=not args.no_fill_void, resize_long_side=args.resize_long_side,
