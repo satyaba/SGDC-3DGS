@@ -102,8 +102,15 @@ def extract_one(model_dir: str | Path, *, iteration: int = -1,
                 run_id: Optional[str] = None, name: Optional[str] = None,
                 csv_path: Optional[str | Path] = None,
                 workdir_root: str = "/content", skip_prepare: bool = False,
-                lpips_net: str = "vgg", dry: bool = False) -> Optional[dict]:
-    """Evaluate ``model_dir`` and (optionally) append a CSV row. Returns the row."""
+                lpips_net: str = "vgg", dry: bool = False,
+                sgdc_adapter: Optional[str] = None,
+                sgdc_label_dir: Optional[str] = None) -> Optional[dict]:
+    """Evaluate ``model_dir`` and (optionally) append a CSV row. Returns the row.
+
+    ``sgdc_adapter``/``sgdc_label_dir`` are only needed for models trained before
+    the trainer started saving ``sgdc_args.json`` (both the band/interior metrics
+    then require an explicit label source).
+    """
     model_dir = Path(model_dir)
     if not skip_prepare:
         prepare(get_method("sgdc"), workdir_root, dry=dry)
@@ -112,6 +119,10 @@ def extract_one(model_dir: str | Path, *, iteration: int = -1,
     cmd = [sys.executable, "eval_sgdc.py", "-m", str(model_dir),
            "--iteration", str(iteration), "--json_out", str(tmp),
            "--lpips_net", lpips_net]
+    if sgdc_adapter:
+        cmd += ["--sgdc_adapter", str(sgdc_adapter)]
+    if sgdc_label_dir:
+        cmd += ["--sgdc_label_dir", str(sgdc_label_dir)]
     print(f"[metrics] eval: {' '.join(cmd)}")
     if dry:
         return None
@@ -134,7 +145,9 @@ def extract_run(run_id: str, *, csv_path: Optional[str | Path] = None,
                 home_dir: Optional[str] = None, workdir_root: str = "/content",
                 skip_prepare: bool = False, lpips_net: str = "vgg",
                 dry: bool = False, tag: Optional[str] = None,
-                model_dir: Optional[str | Path] = None) -> Optional[dict]:
+                model_dir: Optional[str | Path] = None,
+                sgdc_adapter: Optional[str] = None,
+                sgdc_label_dir: Optional[str] = None) -> Optional[dict]:
     """Score a manifest run by id.
 
     ``tag`` / ``model_dir`` mirror the run side (``run_by_id(..., tag=...)``): a
@@ -156,28 +169,33 @@ def extract_run(run_id: str, *, csv_path: Optional[str | Path] = None,
         name=spec.notes or spec.method, csv_path=csv_path,
         workdir_root=workdir_root, skip_prepare=skip_prepare,
         lpips_net=lpips_net, dry=dry,
+        sgdc_adapter=sgdc_adapter, sgdc_label_dir=sgdc_label_dir,
     )
 
 
 def extract_all(*, csv_path: Optional[str | Path] = None,
                 home_dir: Optional[str] = None, workdir_root: str = "/content",
                 skip_prepare: bool = False, lpips_net: str = "vgg",
-                dry: bool = False) -> List[Optional[dict]]:
+                dry: bool = False, sgdc_adapter: Optional[str] = None,
+                sgdc_label_dir: Optional[str] = None) -> List[Optional[dict]]:
     from experiments.runs import full_runs
     return [extract_run(spec.run_id, csv_path=csv_path, home_dir=home_dir,
                         workdir_root=workdir_root, skip_prepare=skip_prepare,
-                        lpips_net=lpips_net, dry=dry)
+                        lpips_net=lpips_net, dry=dry,
+                        sgdc_adapter=sgdc_adapter, sgdc_label_dir=sgdc_label_dir)
             for spec in full_runs()]
 
 
 def extract_sanity(*, csv_path: Optional[str | Path] = None,
                    home_dir: Optional[str] = None, workdir_root: str = "/content",
                    skip_prepare: bool = False, lpips_net: str = "vgg",
-                   dry: bool = False) -> List[Optional[dict]]:
+                   dry: bool = False, sgdc_adapter: Optional[str] = None,
+                   sgdc_label_dir: Optional[str] = None) -> List[Optional[dict]]:
     from experiments.runs import sanity_runs
     return [extract_run(spec.run_id, csv_path=csv_path, home_dir=home_dir,
                         workdir_root=workdir_root, skip_prepare=skip_prepare,
-                        lpips_net=lpips_net, dry=dry)
+                        lpips_net=lpips_net, dry=dry,
+                        sgdc_adapter=sgdc_adapter, sgdc_label_dir=sgdc_label_dir)
             for spec in sanity_runs()]
 
 
@@ -205,12 +223,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     p.add_argument("--workdir-root", default="/content")
     p.add_argument("--skip-prepare", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--sgdc-adapter", default=None,
+                   help="label adapter for band/interior (only needed for models "
+                        "trained before sgdc_args.json was saved)")
+    p.add_argument("--sgdc-label-dir", default=None)
     args = p.parse_args(argv)
 
     csv_path = None if args.no_csv else args.csv
     kw = dict(csv_path=csv_path, home_dir=args.home_dir,
               workdir_root=args.workdir_root, skip_prepare=args.skip_prepare,
-              lpips_net=args.lpips_net, dry=args.dry_run)
+              lpips_net=args.lpips_net, dry=args.dry_run,
+              sgdc_adapter=args.sgdc_adapter, sgdc_label_dir=args.sgdc_label_dir)
     if args.all:
         extract_all(**kw)
     elif args.sanity:
@@ -222,7 +245,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                     run_id=args.model_dir.rstrip("/\\").split(os.sep)[-1],
                     csv_path=csv_path, workdir_root=args.workdir_root,
                     skip_prepare=args.skip_prepare, lpips_net=args.lpips_net,
-                    dry=args.dry_run)
+                    dry=args.dry_run, sgdc_adapter=args.sgdc_adapter,
+                    sgdc_label_dir=args.sgdc_label_dir)
     return 0
 
 

@@ -262,9 +262,26 @@ if __name__ == "__main__":
     args = get_combined_args(parser)
     print("Evaluating " + args.model_path)
     safe_state(args.quiet)
+    adapter_name = getattr(args, "sgdc_adapter", None)
+    label_dir = getattr(args, "sgdc_label_dir", None)
+    min_seg_area = getattr(args, "sgdc_min_seg_area", None)
+    # cfg_args holds only ModelParams, so read the label source the trainer saved
+    # (CLI --sgdc_adapter/--sgdc_label_dir still win when given explicitly).
+    sidecar = os.path.join(getattr(args, "model_path", ""), "sgdc_args.json")
+    if sidecar and os.path.exists(sidecar):
+        try:
+            import json as _json
+            d = _json.loads(open(sidecar).read())
+            adapter_name = adapter_name or d.get("sgdc_adapter")
+            label_dir = label_dir if label_dir is not None else d.get("sgdc_label_dir")
+            min_seg_area = min_seg_area if min_seg_area is not None else d.get("sgdc_min_seg_area")
+            print(f"[sgdc-eval] label source from {sidecar}: adapter={adapter_name} "
+                  f"label_dir={label_dir}")
+        except (OSError, ValueError):
+            pass
     run(model.extract(args), args.iteration, pipeline.extract(args),
         args.skip_train, args.skip_test, args.boundary_band,
         args.json_out or None, args.lpips_net,
-        adapter_name=getattr(args, "sgdc_adapter", None) or "replica",
-        label_dir=getattr(args, "sgdc_label_dir", None) or "",
-        min_seg_area=getattr(args, "sgdc_min_seg_area", None) or 0)
+        adapter_name=adapter_name or "replica",
+        label_dir=label_dir or "",
+        min_seg_area=min_seg_area or 0)

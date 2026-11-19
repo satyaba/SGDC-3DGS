@@ -63,6 +63,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         adapter = get_adapter(adapter_name, dataset.source_path, adapter_cfg)
         gaussians.semantic_store = SemanticStore(adapter, device="cuda")
         print("[SGDC] label adapter:", adapter.meta())
+        # Persist the label source so eval_sgdc.py recomputes band/interior on the
+        # SAME labels (cfg_args only carries ModelParams, not the SGDC switches).
+        import json as _json
+        with open(os.path.join(dataset.model_path, "sgdc_args.json"), "w") as _f:
+            _json.dump({
+                "sgdc_adapter": adapter_name,
+                "sgdc_label_dir": getattr(opt, "sgdc_label_dir", "") or "",
+                "sgdc_min_seg_area": getattr(opt, "sgdc_min_seg_area", 0),
+            }, _f, indent=1)
 
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
